@@ -1,5 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { DEFAULT_MODE, GRAPHQL_URL, SEND_MESSAGE_DOC_ID, SUPPORTED_MODES } from "./constants.js";
+import {
+  DEFAULT_MODE,
+  DELETE_CONVERSATION_DOC_ID,
+  GRAPHQL_URL,
+  SEND_MESSAGE_DOC_ID,
+  SUPPORTED_MODES,
+} from "./constants.js";
 import { parseSseStream } from "./sse.js";
 
 function toUniqueMessageId() {
@@ -29,6 +35,17 @@ export function buildSendPayload({ content, conversationId, currentBranchPath, m
       promptEditType: "new_message",
       attachments: null,
       mode,
+    },
+  };
+}
+
+export function buildDeleteConversationPayload({ conversationId }) {
+  return {
+    doc_id: DELETE_CONVERSATION_DOC_ID,
+    variables: {
+      input: {
+        id: conversationId,
+      },
     },
   };
 }
@@ -122,5 +139,62 @@ export class MetaAIClient {
       mode: resultConversationType,
     };
   }
-}
 
+  async deleteConversation({ conversationId }) {
+    const normalizedConversationId = conversationId?.trim();
+    if (!normalizedConversationId) {
+      throw new Error("Conversation id is required to delete a chat.");
+    }
+
+    const payload = buildDeleteConversationPayload({
+      conversationId: normalizedConversationId,
+    });
+
+    const response = await fetch(GRAPHQL_URL, {
+      method: "POST",
+      headers: {
+        accept: "multipart/mixed, application/json",
+        "content-type": "application/json",
+        origin: "https://www.meta.ai",
+        referer: "https://www.meta.ai/",
+        cookie: this.cookie,
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(`Meta delete request failed: ${response.status} ${errorBody}`);
+    }
+
+    const body = await response.json();
+    if (Array.isArray(body?.errors) && body.errors.length > 0) {
+      const messages = body.errors
+        .map((entry) => entry?.message)
+        .filter(Boolean)
+        .join(" | ");
+      throw new Error(messages || "Meta delete request returned GraphQL errors.");
+    }
+
+    const deleted = body?.data?.deleteConversation;
+    if (!deleted) {
+      throw new Error("Meta delete request returned an unexpected response shape.");
+    }
+
+    if (deleted.success === true) {
+      return { success: true, reason: "deleted", typename: deleted.__typename };
+    }
+
+    const typename = String(deleted.__typename ?? "");
+    const message = String(deleted.message ?? "");
+    if (typename === "GqlError" && /not found/i.test(message)) {
+      return { success: false, reason: "not_found", typename, message };
+    }
+    if (/not.?found/i.test(typename)) {
+      return { success: false, reason: "not_found", typename };
+    }
+
+    const detail = message ? `${typename || "unknown"}: ${message}` : typename || "unknown";
+    throw new Error(`Meta delete request was not successful (${detail}).`);
+  }
+}

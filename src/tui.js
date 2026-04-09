@@ -637,8 +637,12 @@ export async function startTui({
     ]);
     if (confirm !== "delete") return;
 
-    const result = await deleteSessionState(name);
+    const result = await deleteSessionState(name, { client: currentClient });
     if (!result.deleted) {
+      if (result.reason === "auth_required") {
+        pushMessage("error", 'Deleting remote chats requires auth. Run /login first.');
+        return;
+      }
       pushMessage("error", `Session "${name}" was not found.`);
       return;
     }
@@ -656,7 +660,11 @@ export async function startTui({
       return;
     }
 
-    pushMessage("system", `Deleted session "${name}".`);
+    if (result.remote?.reason === "not_found") {
+      pushMessage("system", `Deleted "${name}" locally. Remote chat was already missing.`);
+      return;
+    }
+    pushMessage("system", `Deleted session "${name}" locally and on Meta.`);
   }
 
   async function chooseModeFromMenu() {
@@ -781,7 +789,7 @@ export async function startTui({
       return false;
     }
 
-    if (command.name === "sessions" || command.name === "session") {
+    if (command.name === "sessions") {
       if (command.args.length === 0) {
         await chooseSessionFromMenu();
         return false;

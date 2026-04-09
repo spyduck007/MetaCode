@@ -56,9 +56,9 @@ All prompts automatically run through the file-tool agent runtime.
 - `/logout` — clears config cookie for this CLI
 - `/auth` — show current auth source and cookie health
 - `/new` — start a fresh conversation
-- `/sessions` — open session manager (↑/↓ to select, `Enter` to switch, `D` to delete hovered session)
+- `/sessions` — open session manager (↑/↓ to select, `Enter` to switch, `D` to delete hovered session locally + on Meta; requires auth)
 - `/sessions <name>` — switch session directly
-- `/sessions delete <name>` — delete a stored local session
+- `/sessions delete <name>` — delete a stored session locally + on Meta
 - `/status` — show session/mode/auth status
 - `/set-cookie <cookie>` — save cookie directly from UI
 - `/yolo [on|off|status]` — auto-approve terminal command tool requests

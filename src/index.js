@@ -14,6 +14,7 @@ import {
   ensureSession,
   generateSessionName,
   listSessions,
+  readSessionState,
   resetSession,
   updateSession,
 } from "./sessions.js";
@@ -139,6 +140,46 @@ async function runAgentTask({
   });
 }
 
+async function deleteSessionEverywhere(name, { clientOverride } = {}) {
+  const normalizedName = name?.trim();
+  if (!normalizedName) {
+    throw new Error("Session name is required.");
+  }
+
+  const sessionState = await readSessionState();
+  const existingSession = sessionState.sessions?.[normalizedName];
+  if (!existingSession) {
+    return { deleted: false, reason: "not_found", activeSession: sessionState.activeSession };
+  }
+
+  if (clientOverride === null) {
+    return { deleted: false, reason: "auth_required", activeSession: sessionState.activeSession };
+  }
+
+  let client = clientOverride;
+  if (!client) {
+    try {
+      client = (await resolveAuthState({ requireClient: true })).client;
+    } catch (error) {
+      if (String(error?.message ?? "").includes("No cookie available")) {
+        return { deleted: false, reason: "auth_required", activeSession: sessionState.activeSession };
+      }
+      throw error;
+    }
+  }
+
+  const remote = await client.deleteConversation({
+    conversationId: existingSession.conversationId,
+  });
+
+  const local = await deleteSession(normalizedName);
+  return {
+    ...local,
+    remote,
+    conversationId: existingSession.conversationId,
+  };
+}
+
 async function promptCommandApproval({ command, cwd, timeoutMs, yoloState, progress }) {
   if (yoloState.enabled) {
     progress(`running command in yolo mode: ${command}`);
@@ -204,7 +245,8 @@ program
           saveSession: (name, patch) => updateSession(name, patch),
           loadSession: async (name) => (await ensureSession(name)).session,
           listSessions: () => listSessions(),
-          deleteSessionState: (name) => deleteSession(name),
+          deleteSessionState: (name, { client } = {}) =>
+            deleteSessionEverywhere(name, { clientOverride: client }),
           createSessionName: () => generateSessionName("chat"),
           resetSessionState: (name) => resetSession(name),
           getAuthSummary: async () => (await resolveAuthState({ requireClient: false })).authSummary,
@@ -417,15 +459,25 @@ sessionsCommand
 
 sessionsCommand
   .command("delete")
-  .description("Delete a local session by name")
+  .description("Delete a session locally and on Meta by name")
   .argument("<name>", "Session name")
   .action(async (name) => {
-    const result = await deleteSession(name);
+    const result = await deleteSessionEverywhere(name);
     if (!result.deleted) {
+      if (result.reason === "auth_required") {
+        console.log(chalk.red("Deleting sessions requires auth. Run meta-code auth login first."));
+        process.exitCode = 1;
+        return;
+      }
       console.log(chalk.yellow(`Session "${name}" was not found.`));
       return;
     }
     console.log(chalk.green(`Session "${name}" deleted.`));
+    if (result.remote?.reason === "not_found") {
+      console.log(chalk.yellow("Remote conversation was already missing on Meta."));
+    } else {
+      console.log("remote=deleted");
+    }
     if (result.activeSession) {
       console.log(`activeSession=${result.activeSession}`);
     } else {
