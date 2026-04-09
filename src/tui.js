@@ -1086,6 +1086,9 @@ export async function startTui({
           friendly === "starting from scratch automatically" ||
           friendly === "reformatting response" ||
           friendly === "continuing execution" ||
+          friendly === "recovering from model refusal" ||
+          friendly === "stopping refusal loop" ||
+          friendly === "stopping retry loop" ||
           friendly === "waiting for your input" ||
           friendly === "continuing with assumptions"
         ) {

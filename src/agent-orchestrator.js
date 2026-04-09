@@ -8,6 +8,8 @@ const MAX_REPEAT_TOOL_CALLS = 3;
 const MAX_FOLLOW_UP_QUESTIONS = 1;
 const MIN_FOLLOW_UP_STEP = 3;
 const MIN_FOLLOW_UP_TOOL_CALLS = 2;
+const MAX_INVALID_FINAL_REPEATS = 4;
+const MAX_REFUSAL_RECOVERY_ATTEMPTS = 1;
 
 function safeJsonStringify(value) {
   return JSON.stringify(value, null, 2);
@@ -195,6 +197,35 @@ function buildContinueExecutionPrompt({ previousFinal, missingFiles = [] }) {
   ].join("\n");
 }
 
+function buildRefusalRecoveryPrompt(previousFinal) {
+  return [
+    "MODEL_REFUSAL_RECOVERY",
+    "Your previous response declined the task.",
+    "Continue with the allowed file tools and complete the user request autonomously.",
+    "Do not refuse, and do not ask the user to do manual edits.",
+    'Respond ONLY with {"type":"tool_call",...} or {"type":"final",...}.',
+    "",
+    "Previous response:",
+    truncateText(previousFinal, 1000),
+  ].join("\n");
+}
+
+function buildProviderRefusalFallback() {
+  return [
+    "I started this task, but the model returned repeated refusal responses instead of actionable tool JSON.",
+    "I stopped retrying to avoid a loop.",
+    "Re-run the same prompt (or split it into smaller steps) and I’ll continue from the files already created.",
+  ].join(" ");
+}
+
+function buildInvalidFinalLoopFallback() {
+  return [
+    "I made partial progress, but the model kept returning non-actionable final responses.",
+    "I stopped to avoid a retry loop.",
+    "Run the prompt again and I’ll continue from the current workspace state.",
+  ].join(" ");
+}
+
 export async function runAgentWithFileTools({
   client,
   task,
@@ -219,6 +250,9 @@ export async function runAgentWithFileTools({
   let toolCallsExecuted = 0;
   let toolErrors = 0;
   let followUpsAsked = 0;
+  let lastInvalidFinalFingerprint = "";
+  let invalidFinalRepeatCount = 0;
+  let refusalRecoveryAttempts = 0;
   const touchedFiles = new Set();
 
   for (let step = 1; step <= maxSteps; step += 1) {
@@ -246,6 +280,42 @@ export async function runAgentWithFileTools({
         workspaceRoot,
       });
       if (!finalCheck.ok) {
+        const fingerprint = createFinalFingerprint(directive.content);
+        if (fingerprint === lastInvalidFinalFingerprint) {
+          invalidFinalRepeatCount += 1;
+        } else {
+          lastInvalidFinalFingerprint = fingerprint;
+          invalidFinalRepeatCount = 1;
+        }
+
+        if (finalCheck.reason === "provider-refusal") {
+          if (refusalRecoveryAttempts < MAX_REFUSAL_RECOVERY_ATTEMPTS) {
+            refusalRecoveryAttempts += 1;
+            onStatus?.("recovering refusal");
+            turnPrompt = buildRefusalRecoveryPrompt(directive.content);
+            continue;
+          }
+          onStatus?.("stopping refusal loop");
+          return {
+            content: buildProviderRefusalFallback(),
+            conversationId: nextConversationId,
+            currentBranchPath: nextBranchPath,
+            mode: nextMode,
+            steps: step,
+          };
+        }
+
+        if (invalidFinalRepeatCount >= MAX_INVALID_FINAL_REPEATS) {
+          onStatus?.("stopping invalid loop");
+          return {
+            content: buildInvalidFinalLoopFallback(),
+            conversationId: nextConversationId,
+            currentBranchPath: nextBranchPath,
+            mode: nextMode,
+            steps: step,
+          };
+        }
+
         onStatus?.("continuing execution");
         turnPrompt = buildContinueExecutionPrompt({
           previousFinal: directive.content,
@@ -357,6 +427,8 @@ export async function runAgentWithFileTools({
     } else {
       toolErrors += 1;
     }
+    lastInvalidFinalFingerprint = "";
+    invalidFinalRepeatCount = 0;
     onToolResult?.(toolOutcome);
     turnPrompt = buildToolFeedbackPrompt({
       call: directive,
@@ -410,6 +482,12 @@ function looksIncompleteFinal(text) {
 
 function looksLikeManualHandoff(text) {
   return /(here are (the )?exact fixes you need to make|replace .* with|you need to (fix|edit|change)|make (these|the) changes yourself|apply these (edits|changes))/i.test(
+    text || ""
+  );
+}
+
+function looksLikeProviderRefusal(text) {
+  return /(sorry[, ]+i can[’']?t help you with this request right now|sorry[, ]+i cannot help with this request right now|i can[’']?t help you with this request right now|i cannot help with this request right now)/i.test(
     text || ""
   );
 }
@@ -641,6 +719,10 @@ async function validateFinalResponse({
   touchedFiles,
   workspaceRoot,
 }) {
+  if (looksLikeProviderRefusal(content)) {
+    return { ok: false, reason: "provider-refusal", missingFiles: [] };
+  }
+
   if (looksIncompleteFinal(content)) {
     return { ok: false, reason: "incomplete-language", missingFiles: [] };
   }
@@ -698,9 +780,22 @@ function extractExplicitFilesFromTask(task) {
     if (!candidate) continue;
     if (candidate.includes("://")) continue;
     if (candidate.startsWith(".")) continue;
+    if (isKnownNonFileToken(candidate)) continue;
     files.add(candidate);
   }
   return [...files];
+}
+
+function isKnownNonFileToken(token) {
+  const normalized = String(token || "").trim().toLowerCase();
+  if (!normalized) return false;
+  return /^(node|react|next|vue|nuxt|express|angular|svelte|remix|gatsby|nestjs)\.js$/i.test(
+    normalized
+  );
+}
+
+function createFinalFingerprint(content) {
+  return String(content || "").trim().toLowerCase().replace(/\s+/g, " ").slice(0, 240);
 }
 
 function isInsideRoot(absolutePath, workspaceRoot) {

@@ -411,3 +411,76 @@ test("runAgentWithFileTools rejects manual handoff after tool errors and continu
     await rm(workspace, { recursive: true, force: true });
   }
 });
+
+test("runAgentWithFileTools recovers once then exits cleanly on repeated provider refusal", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "meta-agent-test-"));
+  try {
+    const scriptedResponses = [
+      '```json\n{"type":"tool_call","name":"mkdir","arguments":{"path":"client","recursive":true}}\n```',
+      '```json\n{"type":"final","content":"Sorry, I can’t help you with this request right now. Is there anything else I can help you with?"}\n```',
+      '```json\n{"type":"final","content":"Sorry, I can’t help you with this request right now. Is there anything else I can help you with?"}\n```',
+    ];
+
+    const fakeClient = {
+      async sendMessage() {
+        const content = scriptedResponses.shift();
+        return {
+          content,
+          conversationId: "conv-provider-refusal",
+          currentBranchPath: "9",
+          mode: "think_fast",
+        };
+      },
+    };
+
+    const result = await runAgentWithFileTools({
+      client: fakeClient,
+      task: "Create a dashboard app in this folder.",
+      conversationId: "conv-provider-refusal",
+      currentBranchPath: "0",
+      mode: "think_fast",
+      workspaceRoot: workspace,
+      maxSteps: 8,
+    });
+
+    assert.match(result.content, /repeated refusal responses/i);
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("runAgentWithFileTools does not treat Node.js as required file", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "meta-agent-test-"));
+  try {
+    const scriptedResponses = [
+      '```json\n{"type":"tool_call","name":"write_file","arguments":{"path":"package.json","content":"{}","overwrite":true}}\n```',
+      '```json\n{"type":"final","content":"Done."}\n```',
+    ];
+
+    const fakeClient = {
+      async sendMessage() {
+        const content = scriptedResponses.shift();
+        return {
+          content,
+          conversationId: "conv-nodejs-file-check",
+          currentBranchPath: "11",
+          mode: "think_fast",
+        };
+      },
+    };
+
+    const result = await runAgentWithFileTools({
+      client: fakeClient,
+      task: "Use Node.js and include package.json in the project.",
+      conversationId: "conv-nodejs-file-check",
+      currentBranchPath: "0",
+      mode: "think_fast",
+      workspaceRoot: workspace,
+      maxSteps: 4,
+    });
+
+    assert.equal(result.content, "Done.");
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
