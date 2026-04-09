@@ -35,6 +35,8 @@ Full-screen mode:
 meta-code
 ```
 
+Each full-screen launch starts a fresh chat session by default. To reuse one, pass `--session <name>`.
+
 One-shot mode:
 
 ```bash
@@ -54,9 +56,9 @@ All prompts automatically run through the file-tool agent runtime.
 - `/logout` — clears config cookie for this CLI
 - `/auth` — show current auth source and cookie health
 - `/new` — start a fresh conversation
-- `/session` — open session picker menu
-- `/session <name>` — switch session directly
-- `/sessions` — show all sessions
+- `/sessions` — open session manager (↑/↓ to select, `Enter` to switch, `D` to delete hovered session)
+- `/sessions <name>` — switch session directly
+- `/sessions delete <name>` — delete a stored local session
 - `/status` — show session/mode/auth status
 - `/set-cookie <cookie>` — save cookie directly from UI
 - `/yolo [on|off|status]` — auto-approve terminal command tool requests
@@ -92,7 +94,8 @@ meta-code config set-mode think_hard
 
 ```bash
 meta-code sessions list
-meta-code sessions reset default
+meta-code sessions reset
+meta-code sessions delete default
 ```
 
 ## Agent file tools

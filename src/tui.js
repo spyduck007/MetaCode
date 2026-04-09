@@ -178,6 +178,105 @@ function showSelectionMenu(screen, title, items) {
   });
 }
 
+function showSessionsListMenu(screen, sessionsInfo) {
+  return new Promise((resolve) => {
+    const entries = Object.entries(sessionsInfo.sessions).sort(([, a], [, b]) =>
+      String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? ""))
+    );
+    const listItems = [
+      ...entries.map(([name, details]) => ({
+        type: "session",
+        name,
+        label: `${name}${sessionsInfo.activeSession === name ? " [active]" : ""}  mode=${details.mode}`,
+      })),
+      { type: "create", label: "+ Create new session" },
+      { type: "cancel", label: "Cancel" },
+    ];
+
+    const menuHeight = Math.max(10, Math.min(20, listItems.length + 5));
+    const wrapper = blessed.box({
+      parent: screen,
+      top: "center",
+      left: "center",
+      width: "72%",
+      height: menuHeight,
+      border: "line",
+      label: " Sessions ",
+      tags: true,
+      padding: { left: 1, right: 1, top: 0, bottom: 0 },
+      style: {
+        border: { fg: "cyan" },
+        bg: "black",
+      },
+    });
+
+    blessed.box({
+      parent: wrapper,
+      top: 0,
+      left: 0,
+      width: "100%",
+      height: 1,
+      tags: true,
+      content: "{gray-fg}↑/↓ navigate • Enter switch/create • D delete • Esc close{/}",
+    });
+
+    const list = blessed.list({
+      parent: wrapper,
+      top: 1,
+      left: 0,
+      width: "100%",
+      height: "100%-1",
+      keys: true,
+      mouse: true,
+      vi: true,
+      tags: true,
+      style: {
+        item: { fg: "white", bg: "black" },
+        fg: "white",
+        bg: "black",
+        selected: {
+          bg: "magenta",
+          fg: "white",
+          bold: true,
+        },
+      },
+      items: listItems.map((entry) => entry.label),
+    });
+
+    const close = (value) => {
+      wrapper.detach();
+      screen.render();
+      resolve(value);
+    };
+
+    list.key(["escape", "q"], () => close({ action: "cancel" }));
+    list.key(["d", "D"], () => {
+      const index = typeof list.selected === "number" ? list.selected : 0;
+      const item = listItems[index];
+      if (item?.type !== "session") return;
+      close({ action: "delete", name: item.name });
+    });
+    list.on("select", (_, index) => {
+      const item = listItems[index];
+      if (!item) return close({ action: "cancel" });
+      if (item.type === "session") {
+        close({ action: "switch", name: item.name });
+        return;
+      }
+      if (item.type === "create") {
+        close({ action: "create" });
+        return;
+      }
+      close({ action: "cancel" });
+    });
+
+    wrapper.setFront();
+    list.focus();
+    list.select(0);
+    screen.render();
+  });
+}
+
 function showCommandApprovalMenu(screen, { command, cwd }) {
   return new Promise((resolve) => {
     const wrapper = blessed.box({
@@ -268,11 +367,14 @@ export async function startTui({
   saveSession,
   loadSession,
   listSessions,
+  deleteSessionState,
+  createSessionName,
   resetSessionState,
   getAuthSummary,
   login,
   logout,
   setCookie,
+  initialSystemMessage = null,
   runAgentTask,
 }) {
   let currentClient = client;
@@ -288,6 +390,7 @@ export async function startTui({
       role: "system",
       text: "Welcome to Meta Code. Every prompt runs as a tool-enabled coding agent. Use /help for commands.",
     },
+    ...(initialSystemMessage ? [{ role: "system", text: initialSystemMessage }] : []),
   ];
   let currentSuggestions = [];
   let suggestionSelectedIndex = 0;
@@ -522,6 +625,40 @@ export async function startTui({
     pushMessage("system", `Switched to session "${name}".`);
   }
 
+  async function maybeDeleteSession(name) {
+    if (!deleteSessionState) {
+      pushMessage("error", "Session deletion is unavailable in this build.");
+      return;
+    }
+
+    const confirm = await showSelectionMenu(screen, `Delete "${name}"?`, [
+      { label: "Delete session (cannot be undone)", value: "delete" },
+      { label: "Cancel", value: "cancel" },
+    ]);
+    if (confirm !== "delete") return;
+
+    const result = await deleteSessionState(name);
+    if (!result.deleted) {
+      pushMessage("error", `Session "${name}" was not found.`);
+      return;
+    }
+
+    if (name === currentSessionName) {
+      if (result.activeSession) {
+        currentSessionName = result.activeSession;
+        currentSession = await loadSession(result.activeSession);
+        pushMessage("system", `Deleted "${name}". Switched to "${result.activeSession}".`);
+        return;
+      }
+      const generatedName = createSessionName ? createSessionName() : `session-${Date.now()}`;
+      await switchToSession(generatedName);
+      pushMessage("system", `Deleted "${name}". Created and switched to "${generatedName}".`);
+      return;
+    }
+
+    pushMessage("system", `Deleted session "${name}".`);
+  }
+
   async function chooseModeFromMenu() {
     const selectedMode = await showSelectionMenu(screen, "Select Mode", [
       { label: "Think Fast (think_fast)", value: "think_fast" },
@@ -534,20 +671,26 @@ export async function startTui({
   }
 
   async function chooseSessionFromMenu() {
-    const sessionsInfo = await listSessions();
-    const existingNames = Object.keys(sessionsInfo.sessions);
-    const selected = await showSelectionMenu(screen, "Select Session", [
-      ...existingNames.map((name) => ({ label: name, value: name })),
-      { label: "Create new session", value: "__new__" },
-    ]);
-    if (!selected) return;
+    while (true) {
+      const sessionsInfo = await listSessions();
+      const choice = await showSessionsListMenu(screen, sessionsInfo);
+      if (!choice || choice.action === "cancel") return;
 
-    if (selected === "__new__") {
-      const generatedName = `session-${Date.now().toString().slice(-6)}`;
-      await switchToSession(generatedName);
-      return;
+      if (choice.action === "create") {
+        const generatedName = createSessionName ? createSessionName() : `session-${Date.now()}`;
+        await switchToSession(generatedName);
+        return;
+      }
+
+      if (choice.action === "switch" && choice.name) {
+        await switchToSession(choice.name);
+        return;
+      }
+
+      if (choice.action === "delete" && choice.name) {
+        await maybeDeleteSession(choice.name);
+      }
     }
-    await switchToSession(selected);
   }
 
   async function runSlashCommand(input) {
@@ -633,28 +776,23 @@ export async function startTui({
       return false;
     }
 
-    if (command.name === "sessions") {
-      const sessionsInfo = await listSessions();
-      const lines = Object.entries(sessionsInfo.sessions).map(
-        ([name, details]) =>
-          `${name}  mode=${details.mode}  conversation=${details.conversationId}  branch=${details.currentBranchPath}`
-      );
-      await showInfoModal(screen, "Sessions", [
-        `Active: ${sessionsInfo.activeSession}`,
-        "",
-        ...lines,
-      ]);
-      return false;
-    }
-
     if (command.name === "tools") {
       await showInfoModal(screen, "Agent File Tools", formatToolDefinitionsForPrompt().split("\n"));
       return false;
     }
 
-    if (command.name === "session") {
+    if (command.name === "sessions" || command.name === "session") {
       if (command.args.length === 0) {
         await chooseSessionFromMenu();
+        return false;
+      }
+      if (command.args[0].toLowerCase() === "delete") {
+        const target = command.args[1];
+        if (!target) {
+          pushMessage("error", "Usage: /sessions delete <name>");
+          return false;
+        }
+        await maybeDeleteSession(target);
         return false;
       }
       await switchToSession(command.args[0]);

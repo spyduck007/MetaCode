@@ -16,6 +16,15 @@ test("parseSlashCommand parses command and args", () => {
   });
 });
 
+test("parseSlashCommand parses session delete command", () => {
+  const parsed = parseSlashCommand("/sessions delete archive");
+  assert.deepEqual(parsed, {
+    name: "sessions",
+    args: ["delete", "archive"],
+    raw: "/sessions delete archive",
+  });
+});
+
 test("parseSlashCommand returns null for non-command input", () => {
   assert.equal(parseSlashCommand("hello world"), null);
   assert.equal(parseSlashCommand(""), null);
@@ -27,6 +36,7 @@ test("formatSlashHelpLines contains login and mode commands", () => {
   assert.equal(lines.some((line) => line.startsWith("/mode")), true);
   assert.equal(lines.some((line) => line.startsWith("/tools")), true);
   assert.equal(lines.some((line) => line.startsWith("/yolo")), true);
+  assert.equal(lines.some((line) => line.startsWith("/sessions")), true);
 });
 
 test("getSlashSuggestions returns matching slash commands", () => {

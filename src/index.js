@@ -9,7 +9,14 @@ import { hasSessionCookie, redactCookie, resolveCookie } from "./auth.js";
 import { readConfig, updateConfig, writeConfig } from "./config.js";
 import { MetaAIClient, normalizeMode } from "./meta-client.js";
 import { loginWithBrowser } from "./browser-login.js";
-import { ensureSession, listSessions, resetSession, updateSession } from "./sessions.js";
+import {
+  deleteSession,
+  ensureSession,
+  generateSessionName,
+  listSessions,
+  resetSession,
+  updateSession,
+} from "./sessions.js";
 import { startTui } from "./tui.js";
 import { runAgentWithFileTools } from "./agent-orchestrator.js";
 import { FILE_TOOL_DEFINITIONS } from "./file-tools.js";
@@ -77,11 +84,17 @@ async function setConfigCookie(cookie) {
   return resolveAuthState({ requireClient: false });
 }
 
-async function buildRuntime(options, { requireClient = true } = {}) {
+async function buildRuntime(
+  options,
+  { requireClient = true, freshSessionOnLaunch = false } = {}
+) {
   const config = await readConfig();
   const { client, authSummary } = await resolveAuthState({ requireClient });
 
-  const sessionName = options.session ?? "default";
+  const hasExplicitSession = typeof options.session === "string" && options.session.trim().length > 0;
+  const sessionName =
+    options.session?.trim() ||
+    (freshSessionOnLaunch ? generateSessionName("chat") : "default");
   const { session } = await ensureSession(sessionName);
   const mode = normalizeMode(options.mode ?? session.mode ?? config.defaultMode ?? DEFAULT_MODE);
 
@@ -93,6 +106,7 @@ async function buildRuntime(options, { requireClient = true } = {}) {
     sessionName,
     session: hydratedSession,
     authSummary,
+    launchedFreshSession: freshSessionOnLaunch && !hasExplicitSession,
   };
 }
 
@@ -170,7 +184,7 @@ program
   .description("Meta Code: full-screen coding agent with slash commands")
   .argument("[prompt...]", "One-shot prompt text. Omit for full-screen interactive mode.")
   .option("-m, --mode <mode>", "think_fast | think_hard")
-  .option("-s, --session <name>", "Session name", "default")
+  .option("-s, --session <name>", "Session name")
   .option("-n, --new", "Start a new conversation in this session")
   .option("--yolo", "Auto-approve terminal command tool calls")
   .option("--json", "Print one-shot output as JSON")
@@ -179,7 +193,10 @@ program
       const prompt = Array.isArray(promptParts) ? promptParts.join(" ").trim() : "";
 
       if (!prompt) {
-        const runtime = await buildRuntime(options, { requireClient: false });
+        const runtime = await buildRuntime(options, {
+          requireClient: false,
+          freshSessionOnLaunch: true,
+        });
         await startTui({
           client: runtime.client,
           sessionName: runtime.sessionName,
@@ -187,11 +204,16 @@ program
           saveSession: (name, patch) => updateSession(name, patch),
           loadSession: async (name) => (await ensureSession(name)).session,
           listSessions: () => listSessions(),
+          deleteSessionState: (name) => deleteSession(name),
+          createSessionName: () => generateSessionName("chat"),
           resetSessionState: (name) => resetSession(name),
           getAuthSummary: async () => (await resolveAuthState({ requireClient: false })).authSummary,
           login: async (onStatus) => runBrowserLogin({ onStatus }),
           logout: async () => clearConfigCookie(),
           setCookie: async (cookie) => setConfigCookie(cookie),
+          initialSystemMessage: runtime.launchedFreshSession
+            ? `Started a fresh session "${runtime.sessionName}" for this launch.`
+            : null,
           runAgentTask: async ({
             client,
             task,
@@ -372,10 +394,11 @@ sessionsCommand
   .description("List known sessions")
   .action(async () => {
     const info = await listSessions();
-    console.log(chalk.bold(`Active session: ${info.activeSession}`));
+    console.log(chalk.bold(`Active session: ${info.activeSession ?? "<none>"}`));
     Object.entries(info.sessions).forEach(([name, session]) => {
+      const activeTag = info.activeSession === name ? " [active]" : "";
       console.log(
-        `${name}  mode=${session.mode}  conversationId=${session.conversationId}  branch=${session.currentBranchPath}`
+        `${name}${activeTag}  mode=${session.mode}  conversationId=${session.conversationId}  branch=${session.currentBranchPath}`
       );
     });
   });
@@ -383,11 +406,31 @@ sessionsCommand
 sessionsCommand
   .command("reset")
   .description("Reset session conversation context")
-  .argument("[name]", "Session name", "default")
+  .argument("[name]", "Session name")
   .action(async (name) => {
-    const nextSession = await resetSession(name);
-    console.log(chalk.green(`Session "${name}" reset.`));
+    const info = await listSessions();
+    const targetName = name ?? info.activeSession ?? "default";
+    const nextSession = await resetSession(targetName);
+    console.log(chalk.green(`Session "${targetName}" reset.`));
     console.log(`conversationId=${nextSession.conversationId}`);
+  });
+
+sessionsCommand
+  .command("delete")
+  .description("Delete a local session by name")
+  .argument("<name>", "Session name")
+  .action(async (name) => {
+    const result = await deleteSession(name);
+    if (!result.deleted) {
+      console.log(chalk.yellow(`Session "${name}" was not found.`));
+      return;
+    }
+    console.log(chalk.green(`Session "${name}" deleted.`));
+    if (result.activeSession) {
+      console.log(`activeSession=${result.activeSession}`);
+    } else {
+      console.log("activeSession=<none>");
+    }
   });
 
 const toolsCommand = program.command("tools").description("Inspect built-in tool-enabled agent file tools");

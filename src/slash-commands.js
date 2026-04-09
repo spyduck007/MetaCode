@@ -45,14 +45,9 @@ export const SLASH_COMMAND_DEFINITIONS = [
     description: "Start a fresh conversation in the current session.",
   },
   {
-    name: "session",
-    usage: "/session [name]",
-    description: "Switch session. With no args, opens session picker menu.",
-  },
-  {
     name: "sessions",
-    usage: "/sessions",
-    description: "List known local sessions.",
+    usage: "/sessions [name|delete <name>]",
+    description: "Open session manager. Enter switches; D deletes highlighted session.",
   },
   {
     name: "status",

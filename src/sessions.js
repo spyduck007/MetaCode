@@ -3,18 +3,26 @@ import { readFile, writeFile } from "node:fs/promises";
 import { DEFAULT_MODE } from "./constants.js";
 import { ensureAppDir, getAppPaths } from "./config.js";
 
+function buildSessionRecord() {
+  return {
+    conversationId: randomUUID(),
+    currentBranchPath: "0",
+    mode: DEFAULT_MODE,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 function defaultSessionState() {
   return {
-    activeSession: "default",
-    sessions: {
-      default: {
-        conversationId: randomUUID(),
-        currentBranchPath: "0",
-        mode: DEFAULT_MODE,
-        updatedAt: new Date().toISOString(),
-      },
-    },
+    activeSession: null,
+    sessions: {},
   };
+}
+
+export function generateSessionName(prefix = "session") {
+  const stamp = new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14);
+  const short = randomUUID().slice(0, 6);
+  return `${prefix}-${stamp}-${short}`;
 }
 
 export async function readSessionState(baseDir) {
@@ -39,12 +47,7 @@ export async function writeSessionState(state, baseDir) {
 export async function ensureSession(name, baseDir) {
   const state = await readSessionState(baseDir);
   if (!state.sessions[name]) {
-    state.sessions[name] = {
-      conversationId: randomUUID(),
-      currentBranchPath: "0",
-      mode: DEFAULT_MODE,
-      updatedAt: new Date().toISOString(),
-    };
+    state.sessions[name] = buildSessionRecord();
   }
   state.activeSession = name;
   await writeSessionState(state, baseDir);
@@ -65,14 +68,25 @@ export async function updateSession(name, patch, baseDir) {
 
 export async function resetSession(name, baseDir) {
   const { state } = await ensureSession(name, baseDir);
-  state.sessions[name] = {
-    conversationId: randomUUID(),
-    currentBranchPath: "0",
-    mode: DEFAULT_MODE,
-    updatedAt: new Date().toISOString(),
-  };
+  state.sessions[name] = buildSessionRecord();
   await writeSessionState(state, baseDir);
   return state.sessions[name];
+}
+
+export async function deleteSession(name, baseDir) {
+  const state = await readSessionState(baseDir);
+  if (!state.sessions[name]) {
+    return { deleted: false, reason: "not_found", activeSession: state.activeSession };
+  }
+
+  delete state.sessions[name];
+  if (state.activeSession === name) {
+    const nextActive = Object.keys(state.sessions)[0] ?? null;
+    state.activeSession = nextActive;
+  }
+
+  await writeSessionState(state, baseDir);
+  return { deleted: true, activeSession: state.activeSession };
 }
 
 export async function listSessions(baseDir) {
@@ -82,4 +96,3 @@ export async function listSessions(baseDir) {
     sessions: state.sessions,
   };
 }
-

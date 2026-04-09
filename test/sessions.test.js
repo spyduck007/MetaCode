@@ -3,7 +3,14 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
-import { ensureSession, readSessionState, resetSession, updateSession } from "../src/sessions.js";
+import {
+  deleteSession,
+  ensureSession,
+  generateSessionName,
+  readSessionState,
+  resetSession,
+  updateSession,
+} from "../src/sessions.js";
 
 test("ensureSession creates named session", async () => {
   const baseDir = await mkdtemp(path.join(os.tmpdir(), "meta-code-test-"));
@@ -45,4 +52,28 @@ test("resetSession creates new conversationId", async () => {
   } finally {
     await rm(baseDir, { recursive: true, force: true });
   }
+});
+
+test("deleteSession removes session and updates active session", async () => {
+  const baseDir = await mkdtemp(path.join(os.tmpdir(), "meta-code-test-"));
+  try {
+    await ensureSession("one", baseDir);
+    await ensureSession("two", baseDir);
+    const result = await deleteSession("two", baseDir);
+    assert.equal(result.deleted, true);
+    assert.equal(result.activeSession, "one");
+    const state = await readSessionState(baseDir);
+    assert.equal(Boolean(state.sessions.two), false);
+    assert.equal(state.activeSession, "one");
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("generateSessionName creates unique prefixed names", () => {
+  const a = generateSessionName("chat");
+  const b = generateSessionName("chat");
+  assert.equal(a.startsWith("chat-"), true);
+  assert.equal(b.startsWith("chat-"), true);
+  assert.notEqual(a, b);
 });
