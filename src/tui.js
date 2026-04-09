@@ -105,31 +105,51 @@ function showInfoModal(screen, title, lines) {
 
 function showSelectionMenu(screen, title, items) {
   return new Promise((resolve) => {
+    const menuHeight = Math.max(9, Math.min(18, items.length + 6));
+
     const wrapper = blessed.box({
       parent: screen,
       top: "center",
       left: "center",
-      width: "60%",
-      height: "54%",
+      width: "62%",
+      height: menuHeight,
       border: "line",
       label: ` ${title} `,
+      tags: true,
+      padding: { left: 1, right: 1, top: 0, bottom: 0 },
       style: {
         border: { fg: "cyan" },
         bg: "black",
       },
     });
 
+    const helpLine = blessed.box({
+      parent: wrapper,
+      top: 0,
+      left: 0,
+      width: "100%",
+      height: 1,
+      tags: true,
+      content: "{gray-fg}↑/↓ move • Enter select • Esc cancel{/}",
+    });
+
     const list = blessed.list({
       parent: wrapper,
       top: 1,
-      left: 1,
-      width: "100%-2",
-      height: "100%-2",
+      left: 0,
+      width: "100%",
+      height: "100%-1",
       keys: true,
       mouse: true,
       vi: true,
       tags: true,
       style: {
+        item: {
+          fg: "white",
+          bg: "black",
+        },
+        fg: "white",
+        bg: "black",
         selected: {
           bg: "magenta",
           fg: "white",
@@ -147,6 +167,11 @@ function showSelectionMenu(screen, title, items) {
 
     list.on("select", (_, index) => close(items[index].value));
     list.key(["escape", "q"], () => close(null));
+    list.key(["enter"], () => {
+      const index = typeof list.selected === "number" ? list.selected : 0;
+      close(items[index]?.value ?? null);
+    });
+    wrapper.setFront();
     list.focus();
     list.select(0);
     screen.render();
@@ -267,7 +292,17 @@ export async function startTui({
   let currentSuggestions = [];
   let suggestionSelectedIndex = 0;
 
+  const program = blessed.program({
+    input: process.stdin,
+    output: process.stdout,
+    terminal: process.env.TERM,
+    forceUnicode: true,
+    tput: true,
+    extended: false,
+  });
+
   const screen = blessed.screen({
+    program,
     smartCSR: true,
     fullUnicode: true,
     title: "Meta Code",
