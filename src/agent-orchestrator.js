@@ -76,10 +76,12 @@ function buildToolFeedbackPrompt({ call, outcome }) {
     arguments: call.arguments ?? {},
     outcome,
   });
+  const extraGuidance = buildToolOutcomeGuidance({ call, outcome });
   return [
     "TOOL_RESULT",
     truncateText(summary),
     "",
+    ...(extraGuidance ? [extraGuidance, ""] : []),
     "Continue solving the user task.",
     "Respond with either next tool_call JSON or final JSON.",
   ].join("\n");
@@ -103,7 +105,8 @@ function buildRepetitionPrompt(call) {
   return [
     "LOOP_DETECTED",
     `You repeated tool call "${call.name}" with the same arguments multiple times.`,
-    "Choose a different next action using a different tool call, or return final if done.",
+    "Do not ask the user to apply manual file fixes.",
+    "Choose a different next action using a different tool call and continue autonomously.",
     'Respond ONLY with {"type":"tool_call",...} or {"type":"final",...}.',
   ].join("\n");
 }
@@ -183,6 +186,7 @@ function buildContinueExecutionPrompt({ previousFinal, missingFiles = [] }) {
     "CONTINUE_EXECUTION",
     "Your previous final response ended too early.",
     missingLine,
+    "Do not hand work back to the user as manual code edits.",
     "Continue by using tools to complete remaining work before returning final.",
     'Respond ONLY with {"type":"tool_call",...} or {"type":"final",...}.',
     "",
@@ -213,6 +217,7 @@ export async function runAgentWithFileTools({
   let lastToolCallSignature = "";
   let repeatToolCallCount = 0;
   let toolCallsExecuted = 0;
+  let toolErrors = 0;
   let followUpsAsked = 0;
   const touchedFiles = new Set();
 
@@ -236,6 +241,7 @@ export async function runAgentWithFileTools({
         task,
         content: directive.content,
         toolCallsExecuted,
+        toolErrors,
         touchedFiles,
         workspaceRoot,
       });
@@ -348,6 +354,8 @@ export async function runAgentWithFileTools({
     toolCallsExecuted += 1;
     if (toolOutcome.ok) {
       collectTouchedFiles(touchedFiles, directive, toolOutcome);
+    } else {
+      toolErrors += 1;
     }
     onToolResult?.(toolOutcome);
     turnPrompt = buildToolFeedbackPrompt({
@@ -398,6 +406,29 @@ function looksIncompleteFinal(text) {
   return /(let'?s\s+(create|add|build|start|do)|starting\s+(with|by)|next\s+(step|i('| )?ll|we('| )?ll)|we still need|remaining work|not done yet|i can continue)/i.test(
     text || ""
   );
+}
+
+function looksLikeManualHandoff(text) {
+  return /(here are (the )?exact fixes you need to make|replace .* with|you need to (fix|edit|change)|make (these|the) changes yourself|apply these (edits|changes))/i.test(
+    text || ""
+  );
+}
+
+function buildToolOutcomeGuidance({ call, outcome }) {
+  if (outcome?.ok !== false) return "";
+  if (call?.name === "edit_file" && /oldText was not found/i.test(String(outcome.error || ""))) {
+    return [
+      "RECOVERY_HINT",
+      "The previous edit_file failed because oldText did not match current file content.",
+      "Do not repeat the same edit_file arguments.",
+      "Read the file first, then use exact oldText or write_file with the full corrected file.",
+    ].join("\n");
+  }
+  return [
+    "RECOVERY_HINT",
+    "The tool call failed. Do not repeat identical arguments.",
+    "Try a different tool call to inspect current state and continue autonomously.",
+  ].join("\n");
 }
 
 function parseCandidateJson(candidate) {
@@ -606,11 +637,16 @@ async function validateFinalResponse({
   task,
   content,
   toolCallsExecuted,
+  toolErrors,
   touchedFiles,
   workspaceRoot,
 }) {
   if (looksIncompleteFinal(content)) {
     return { ok: false, reason: "incomplete-language", missingFiles: [] };
+  }
+
+  if (toolErrors > 0 && looksLikeManualHandoff(content)) {
+    return { ok: false, reason: "manual-handoff", missingFiles: [] };
   }
 
   const fileRequirements = await checkExplicitFiles(task, workspaceRoot);

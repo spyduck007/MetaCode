@@ -31,6 +31,17 @@ function escapeTags(text) {
   return String(text).replaceAll("{", "\\{").replaceAll("}", "\\}");
 }
 
+export function shouldSubmitPromptOnEnter(ch, key = {}, { rapidInputBurst = false } = {}) {
+  if (key.name !== "enter" || key.shift || key.ctrl || key.meta) return false;
+  if (rapidInputBurst) return false;
+
+  // Regular Enter keypress emits carriage return. Pasted multiline content
+  // typically carries line-feed newlines, which should stay in the textarea.
+  if (typeof key.sequence === "string" && key.sequence !== "\r") return false;
+  if (ch === "\n") return false;
+  return true;
+}
+
 function trimMessageHistory(messages) {
   if (messages.length > MAX_MESSAGES) {
     messages.splice(0, messages.length - MAX_MESSAGES);
@@ -678,8 +689,13 @@ export async function startTui({
   });
 
   const defaultInputListener = inputBox._listener.bind(inputBox);
+  let lastInputKeyTs = 0;
   inputBox._listener = function patchedInputListener(ch, key = {}) {
-    if (key.name === "enter" && !key.shift && !key.ctrl && !key.meta) {
+    const now = Date.now();
+    const rapidInputBurst = lastInputKeyTs > 0 && now - lastInputKeyTs <= 12;
+    lastInputKeyTs = now;
+
+    if (shouldSubmitPromptOnEnter(ch, key, { rapidInputBurst })) {
       this._done?.(null, this.value);
       return;
     }

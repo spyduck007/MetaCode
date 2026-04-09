@@ -365,3 +365,49 @@ test("runAgentWithFileTools continues when final response is clearly incomplete"
     await rm(workspace, { recursive: true, force: true });
   }
 });
+
+test("runAgentWithFileTools rejects manual handoff after tool errors and continues", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "meta-agent-test-"));
+  try {
+    await executeFileToolCall(
+      {
+        name: "write_file",
+        arguments: { path: "server/index.js", content: "const app = {};\n" },
+      },
+      { workspaceRoot: workspace }
+    );
+
+    const scriptedResponses = [
+      '```json\n{"type":"tool_call","name":"edit_file","arguments":{"path":"server/index.js","oldText":"const missing = true;","newText":"const app = true;"}}\n```',
+      '```json\n{"type":"final","content":"I hit a loop trying to fix the files automatically. Here are the exact fixes you need to make."}\n```',
+      '```json\n{"type":"tool_call","name":"write_file","arguments":{"path":"server/index.js","content":"const app = true;\\n"}}\n```',
+      '```json\n{"type":"final","content":"Done, the file is fixed automatically."}\n```',
+    ];
+
+    const fakeClient = {
+      async sendMessage() {
+        const content = scriptedResponses.shift();
+        return {
+          content,
+          conversationId: "conv-manual-handoff",
+          currentBranchPath: "5",
+          mode: "think_fast",
+        };
+      },
+    };
+
+    const result = await runAgentWithFileTools({
+      client: fakeClient,
+      task: "Fix the server file completely.",
+      conversationId: "conv-manual-handoff",
+      currentBranchPath: "0",
+      mode: "think_fast",
+      workspaceRoot: workspace,
+      maxSteps: 8,
+    });
+
+    assert.equal(result.content, "Done, the file is fixed automatically.");
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
