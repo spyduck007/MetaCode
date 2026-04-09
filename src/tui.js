@@ -116,7 +116,6 @@ function showSelectionMenu(screen, title, items) {
       border: "line",
       label: ` ${title} `,
       tags: true,
-      padding: { left: 1, right: 1, top: 0, bottom: 0 },
       style: {
         border: { fg: "cyan" },
         bg: "black",
@@ -127,7 +126,7 @@ function showSelectionMenu(screen, title, items) {
       parent: wrapper,
       top: 0,
       left: 0,
-      width: "100%",
+      width: "100%-3",
       height: 1,
       tags: true,
       content: "{gray-fg}↑/↓ move • Enter select • Esc cancel{/}",
@@ -137,8 +136,8 @@ function showSelectionMenu(screen, title, items) {
       parent: wrapper,
       top: 1,
       left: 0,
-      width: "100%",
-      height: "100%-1",
+      width: "100%-3",
+      height: "100%-3",
       keys: true,
       mouse: true,
       vi: true,
@@ -203,7 +202,6 @@ function showSessionsListMenu(screen, sessionsInfo) {
       border: "line",
       label: " Sessions ",
       tags: true,
-      padding: { left: 1, right: 1, top: 0, bottom: 0 },
       style: {
         border: { fg: "cyan" },
         bg: "black",
@@ -214,7 +212,7 @@ function showSessionsListMenu(screen, sessionsInfo) {
       parent: wrapper,
       top: 0,
       left: 0,
-      width: "100%",
+      width: "100%-3",
       height: 1,
       tags: true,
       content: "{gray-fg}↑/↓ navigate • Enter switch/create • D delete • Esc close{/}",
@@ -224,8 +222,8 @@ function showSessionsListMenu(screen, sessionsInfo) {
       parent: wrapper,
       top: 1,
       left: 0,
-      width: "100%",
-      height: "100%-1",
+      width: "100%-3",
+      height: "100%-3",
       keys: true,
       mouse: true,
       vi: true,
@@ -292,15 +290,14 @@ function showCommandApprovalMenu(screen, { command, cwd }) {
         border: { fg: "yellow" },
         bg: "black",
       },
-      padding: { left: 1, right: 1, top: 1, bottom: 1 },
     });
 
     const info = blessed.box({
       parent: wrapper,
       top: 0,
       left: 0,
-      width: "100%",
-      height: 8,
+      width: "100%-3",
+      height: 7,
       tags: true,
       content: [
         "{bold}The agent wants to run this command:{/bold}",
@@ -313,14 +310,20 @@ function showCommandApprovalMenu(screen, { command, cwd }) {
 
     const list = blessed.list({
       parent: wrapper,
-      top: 9,
+      top: 8,
       left: 0,
-      width: "100%",
+      width: "100%-3",
       height: "100%-10",
       keys: true,
       mouse: true,
       vi: true,
       style: {
+        item: {
+          fg: "white",
+          bg: "black",
+        },
+        fg: "white",
+        bg: "black",
         selected: {
           bg: "yellow",
           fg: "black",
@@ -639,6 +642,10 @@ export async function startTui({
 
     const result = await deleteSessionState(name, { client: currentClient });
     if (!result.deleted) {
+      if (result.reason === "active_session") {
+        pushMessage("error", `Cannot delete active session "${name}". Switch to another session first.`);
+        return;
+      }
       if (result.reason === "auth_required") {
         pushMessage("error", 'Deleting remote chats requires auth. Run /login first.');
         return;

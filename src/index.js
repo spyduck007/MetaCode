@@ -151,6 +151,9 @@ async function deleteSessionEverywhere(name, { clientOverride } = {}) {
   if (!existingSession) {
     return { deleted: false, reason: "not_found", activeSession: sessionState.activeSession };
   }
+  if (sessionState.activeSession === normalizedName) {
+    return { deleted: false, reason: "active_session", activeSession: sessionState.activeSession };
+  }
 
   if (clientOverride === null) {
     return { deleted: false, reason: "auth_required", activeSession: sessionState.activeSession };
@@ -464,6 +467,11 @@ sessionsCommand
   .action(async (name) => {
     const result = await deleteSessionEverywhere(name);
     if (!result.deleted) {
+      if (result.reason === "active_session") {
+        console.log(chalk.red(`Cannot delete active session "${name}". Switch sessions first.`));
+        process.exitCode = 1;
+        return;
+      }
       if (result.reason === "auth_required") {
         console.log(chalk.red("Deleting sessions requires auth. Run meta-code auth login first."));
         process.exitCode = 1;

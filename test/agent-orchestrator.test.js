@@ -27,6 +27,22 @@ test("extractAgentDirective accepts response-field JSON as final", () => {
   assert.equal(directive.content, "Done from response key.");
 });
 
+test("extractAgentDirective unwraps escaped final JSON output", () => {
+  const directive = extractAgentDirective(
+    '\\"{\\"type\\":\\"final\\",\\"content\\":\\"Clean final answer.\\"}\\"'
+  );
+  assert.equal(directive.type, "final");
+  assert.equal(directive.content, "Clean final answer.");
+});
+
+test("extractAgentDirective unwraps slash-prefixed final JSON output", () => {
+  const directive = extractAgentDirective(
+    '\\{"type":"final","content":"Recovered from slash-prefixed JSON."}'
+  );
+  assert.equal(directive.type, "final");
+  assert.equal(directive.content, "Recovered from slash-prefixed JSON.");
+});
+
 test("runAgentWithFileTools executes tool call then returns final", async () => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "meta-agent-test-"));
   try {

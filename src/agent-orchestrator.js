@@ -303,6 +303,41 @@ function looksIncompleteFinal(text) {
 }
 
 function parseCandidateJson(candidate) {
+  const queue = [String(candidate ?? "").trim()];
+  const seen = new Set();
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current || seen.has(current)) continue;
+    seen.add(current);
+
+    const parsed = tryParseJsonCandidate(current);
+    if (parsed && typeof parsed === "object") {
+      return parsed;
+    }
+    if (typeof parsed === "string" && parsed.trim()) {
+      queue.push(parsed.trim());
+    }
+
+    const strippedLeadingSlash = current.replace(/^\\+/, "");
+    if (strippedLeadingSlash !== current) {
+      queue.push(strippedLeadingSlash);
+    }
+
+    const unescapedCommon = strippedLeadingSlash
+      .replace(/\\"/g, '"')
+      .replace(/\\n/g, "\n")
+      .replace(/\\t/g, "\t")
+      .replace(/\\r/g, "\r");
+    if (unescapedCommon !== strippedLeadingSlash) {
+      queue.push(unescapedCommon);
+    }
+  }
+
+  return null;
+}
+
+function tryParseJsonCandidate(candidate) {
   try {
     return JSON.parse(candidate);
   } catch {
@@ -356,6 +391,13 @@ function coerceParsedDirective(parsed) {
     (typeof parsed?.answer === "string" && parsed.answer);
 
   if (fallbackFinal) {
+    const nested = parseCandidateJson(fallbackFinal);
+    if (nested) {
+      const nestedDirective = coerceParsedDirective(nested);
+      if (nestedDirective?.type === "final") {
+        return nestedDirective;
+      }
+    }
     return {
       type: "final",
       content: fallbackFinal,

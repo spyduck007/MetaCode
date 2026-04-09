@@ -78,12 +78,11 @@ export async function deleteSession(name, baseDir) {
   if (!state.sessions[name]) {
     return { deleted: false, reason: "not_found", activeSession: state.activeSession };
   }
+  if (state.activeSession === name) {
+    return { deleted: false, reason: "active_session", activeSession: state.activeSession };
+  }
 
   delete state.sessions[name];
-  if (state.activeSession === name) {
-    const nextActive = Object.keys(state.sessions)[0] ?? null;
-    state.activeSession = nextActive;
-  }
 
   await writeSessionState(state, baseDir);
   return { deleted: true, activeSession: state.activeSession };

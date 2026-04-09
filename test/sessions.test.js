@@ -59,12 +59,28 @@ test("deleteSession removes session and updates active session", async () => {
   try {
     await ensureSession("one", baseDir);
     await ensureSession("two", baseDir);
+    await ensureSession("one", baseDir);
     const result = await deleteSession("two", baseDir);
     assert.equal(result.deleted, true);
     assert.equal(result.activeSession, "one");
     const state = await readSessionState(baseDir);
     assert.equal(Boolean(state.sessions.two), false);
     assert.equal(state.activeSession, "one");
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("deleteSession rejects deleting active session", async () => {
+  const baseDir = await mkdtemp(path.join(os.tmpdir(), "meta-code-test-"));
+  try {
+    await ensureSession("active", baseDir);
+    const result = await deleteSession("active", baseDir);
+    assert.equal(result.deleted, false);
+    assert.equal(result.reason, "active_session");
+    const state = await readSessionState(baseDir);
+    assert.equal(Boolean(state.sessions.active), true);
+    assert.equal(state.activeSession, "active");
   } finally {
     await rm(baseDir, { recursive: true, force: true });
   }
