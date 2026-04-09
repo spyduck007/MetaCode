@@ -72,6 +72,7 @@ All prompts automatically run through the file-tool agent runtime.
 - `/exit` — quit full-screen mode
 
 Autocomplete tip: start typing `/` commands to open the suggestion list, use Up/Down to choose, and press `Tab` to complete.
+Prompt tip: press `Enter` to send, and use `Shift+Enter` for a newline in multiline prompts.
 
 ## CLI auth commands
 

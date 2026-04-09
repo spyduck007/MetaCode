@@ -377,21 +377,17 @@ function coerceParsedDirective(parsed) {
     };
   }
 
-  if (parsed?.type === "final" && typeof parsed?.content === "string") {
+  const finalText = extractFinalTextFromParsed(parsed);
+  if (parsed?.type === "final" && typeof finalText === "string") {
     return {
       type: "final",
-      content: parsed.content,
+      content: unwrapNestedFinalText(finalText),
     };
   }
 
-  const fallbackFinal =
-    (typeof parsed?.content === "string" && parsed.content) ||
-    (typeof parsed?.response === "string" && parsed.response) ||
-    (typeof parsed?.message === "string" && parsed.message) ||
-    (typeof parsed?.answer === "string" && parsed.answer);
-
-  if (fallbackFinal) {
-    const nested = parseCandidateJson(fallbackFinal);
+  if (typeof finalText === "string") {
+    const normalized = unwrapNestedFinalText(finalText);
+    const nested = parseCandidateJson(normalized);
     if (nested) {
       const nestedDirective = coerceParsedDirective(nested);
       if (nestedDirective?.type === "final") {
@@ -400,11 +396,48 @@ function coerceParsedDirective(parsed) {
     }
     return {
       type: "final",
-      content: fallbackFinal,
+      content: normalized,
     };
   }
 
   return null;
+}
+
+function extractFinalTextFromParsed(parsed) {
+  if (!parsed || typeof parsed !== "object") return null;
+
+  const direct =
+    (typeof parsed.content === "string" && parsed.content) ||
+    (typeof parsed.value === "string" && parsed.value) ||
+    (typeof parsed.text === "string" && parsed.text) ||
+    (typeof parsed.response === "string" && parsed.response) ||
+    (typeof parsed.message === "string" && parsed.message) ||
+    (typeof parsed.answer === "string" && parsed.answer) ||
+    (typeof parsed.output === "string" && parsed.output);
+
+  if (direct) return direct;
+
+  if (parsed.final && typeof parsed.final === "object") {
+    const nested = extractFinalTextFromParsed(parsed.final);
+    if (nested) return nested;
+  }
+  if (parsed.data && typeof parsed.data === "object") {
+    const nested = extractFinalTextFromParsed(parsed.data);
+    if (nested) return nested;
+  }
+
+  return null;
+}
+
+function unwrapNestedFinalText(value, depth = 0) {
+  if (typeof value !== "string" || depth >= 4) return value;
+  const trimmed = value.trim();
+  const nested = parseCandidateJson(trimmed);
+  if (!nested) return value;
+
+  const nestedText = extractFinalTextFromParsed(nested);
+  if (!nestedText || nestedText === value) return value;
+  return unwrapNestedFinalText(nestedText, depth + 1);
 }
 
 function collectTouchedFiles(touchedFiles, directive, toolOutcome) {

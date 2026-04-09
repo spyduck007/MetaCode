@@ -16,7 +16,7 @@ import {
 
 const MAX_MESSAGES = 250;
 const STATUS_HEIGHT = 1;
-const INPUT_HEIGHT = 3;
+const INPUT_HEIGHT = 5;
 const AUTOCOMPLETE_LIST_MAX = 6;
 
 const TITLE_ART_LINES = [
@@ -474,7 +474,7 @@ export async function startTui({
     },
   });
 
-  const inputBox = blessed.textbox({
+  const inputBox = blessed.textarea({
     parent: screen,
     bottom: 0,
     left: 0,
@@ -484,7 +484,10 @@ export async function startTui({
     inputOnFocus: true,
     keys: true,
     mouse: true,
-    label: " Prompt ",
+    vi: true,
+    scrollable: true,
+    alwaysScroll: true,
+    label: " Prompt (Enter send • Shift+Enter newline) ",
     style: {
       border: { fg: "yellow" },
       focus: {
@@ -493,6 +496,15 @@ export async function startTui({
     },
     padding: { left: 1, right: 1 },
   });
+
+  const defaultInputListener = inputBox._listener.bind(inputBox);
+  inputBox._listener = function patchedInputListener(ch, key = {}) {
+    if (key.name === "enter" && !key.shift && !key.ctrl && !key.meta) {
+      this._done?.(null, this.value);
+      return;
+    }
+    return defaultInputListener(ch, key);
+  };
 
   let busy = false;
   let resolving = false;
