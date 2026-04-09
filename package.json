@@ -1,0 +1,47 @@
+{
+  "name": "meta-code-cli",
+  "version": "1.0.0",
+  "description": "Meta Code is an unofficial Meta AI coding CLI with agentic tools and a full-screen TUI",
+  "bin": {
+    "meta-code": "src/index.js",
+    "metacode": "src/index.js",
+    "meta": "src/index.js"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test"
+  },
+  "keywords": [
+    "cli",
+    "meta-ai",
+    "coding-agent",
+    "terminal",
+    "tui"
+  ],
+  "author": "",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/spyduck007/MetaCode.git"
+  },
+  "bugs": {
+    "url": "https://github.com/spyduck007/MetaCode/issues"
+  },
+  "homepage": "https://github.com/spyduck007/MetaCode#readme",
+  "preferGlobal": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "type": "module",
+  "dependencies": {
+    "blessed": "^0.1.81",
+    "chalk": "^5.6.2",
+    "commander": "^14.0.3",
+    "playwright": "^1.59.1"
+  }
+}
