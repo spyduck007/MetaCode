@@ -412,24 +412,43 @@ test("runAgentWithFileTools rejects manual handoff after tool errors and continu
   }
 });
 
-test("runAgentWithFileTools recovers once then exits cleanly on repeated provider refusal", async () => {
+test("runAgentWithFileTools reseeds conversation after refusal and keeps going", async () => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "meta-agent-test-"));
   try {
     const scriptedResponses = [
-      '```json\n{"type":"tool_call","name":"mkdir","arguments":{"path":"client","recursive":true}}\n```',
-      '```json\n{"type":"final","content":"Sorry, I can’t help you with this request right now. Is there anything else I can help you with?"}\n```',
-      '```json\n{"type":"final","content":"Sorry, I can’t help you with this request right now. Is there anything else I can help you with?"}\n```',
+      {
+        content: '```json\n{"type":"tool_call","name":"mkdir","arguments":{"path":"client","recursive":true}}\n```',
+        conversationId: "conv-a",
+        currentBranchPath: "1",
+        mode: "think_fast",
+      },
+      {
+        content:
+          '```json\n{"type":"final","content":"Sorry, I can’t help you with this request right now. Is there anything else I can help you with?"}\n```',
+        conversationId: "conv-a",
+        currentBranchPath: "1",
+        mode: "think_fast",
+      },
+      {
+        content:
+          '```json\n{"type":"tool_call","name":"write_file","arguments":{"path":"README.md","content":"ok","overwrite":true}}\n```',
+        conversationId: "conv-b",
+        currentBranchPath: "0",
+        mode: "think_fast",
+      },
+      {
+        content: '```json\n{"type":"final","content":"Completed after reseed."}\n```',
+        conversationId: "conv-b",
+        currentBranchPath: "2",
+        mode: "think_fast",
+      },
     ];
+    const callInputs = [];
 
     const fakeClient = {
-      async sendMessage() {
-        const content = scriptedResponses.shift();
-        return {
-          content,
-          conversationId: "conv-provider-refusal",
-          currentBranchPath: "9",
-          mode: "think_fast",
-        };
+      async sendMessage(input) {
+        callInputs.push(input);
+        return scriptedResponses.shift();
       },
     };
 
@@ -443,7 +462,50 @@ test("runAgentWithFileTools recovers once then exits cleanly on repeated provide
       maxSteps: 8,
     });
 
-    assert.match(result.content, /repeated refusal responses/i);
+    assert.equal(result.content, "Completed after reseed.");
+    assert.equal(callInputs[2].conversationId, undefined);
+    assert.match(callInputs[2].content, /RECOVERY_RESEED/);
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("runAgentWithFileTools omits large write_file content in tool feedback prompt", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "meta-agent-test-"));
+  try {
+    const largeContent = "x".repeat(5000);
+    const scriptedResponses = [
+      `\`\`\`json\n{"type":"tool_call","name":"write_file","arguments":{"path":"big.txt","content":"${largeContent}","overwrite":true}}\n\`\`\``,
+      '```json\n{"type":"final","content":"Done."}\n```',
+    ];
+    const callInputs = [];
+
+    const fakeClient = {
+      async sendMessage(input) {
+        callInputs.push(input);
+        const content = scriptedResponses.shift();
+        return {
+          content,
+          conversationId: "conv-feedback-sanitize",
+          currentBranchPath: "3",
+          mode: "think_fast",
+        };
+      },
+    };
+
+    const result = await runAgentWithFileTools({
+      client: fakeClient,
+      task: "Create one file.",
+      conversationId: "conv-feedback-sanitize",
+      currentBranchPath: "0",
+      mode: "think_fast",
+      workspaceRoot: workspace,
+      maxSteps: 4,
+    });
+
+    assert.equal(result.content, "Done.");
+    assert.match(callInputs[1].content, /\[omitted 5000 chars\]/);
+    assert.equal(callInputs[1].content.includes("xxxxxxxxxxxxxxxxxxxxxxxx"), false);
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }

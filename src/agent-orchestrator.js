@@ -9,7 +9,7 @@ const MAX_FOLLOW_UP_QUESTIONS = 1;
 const MIN_FOLLOW_UP_STEP = 3;
 const MIN_FOLLOW_UP_TOOL_CALLS = 2;
 const MAX_INVALID_FINAL_REPEATS = 4;
-const MAX_REFUSAL_RECOVERY_ATTEMPTS = 1;
+const MAX_REFUSAL_RECOVERY_ATTEMPTS = 2;
 
 function safeJsonStringify(value) {
   return JSON.stringify(value, null, 2);
@@ -73,10 +73,12 @@ function buildAgentBootstrapPrompt({ task, workspaceRoot }) {
 }
 
 function buildToolFeedbackPrompt({ call, outcome }) {
+  const safeArguments = sanitizeToolArgumentsForFeedback(call?.name, call?.arguments ?? {});
+  const safeOutcome = sanitizeToolOutcomeForFeedback(outcome);
   const summary = safeJsonStringify({
     tool: call.name,
-    arguments: call.arguments ?? {},
-    outcome,
+    arguments: safeArguments,
+    outcome: safeOutcome,
   });
   const extraGuidance = buildToolOutcomeGuidance({ call, outcome });
   return [
@@ -197,15 +199,16 @@ function buildContinueExecutionPrompt({ previousFinal, missingFiles = [] }) {
   ].join("\n");
 }
 
-function buildRefusalRecoveryPrompt(previousFinal) {
+function buildRefusalReseedPrompt({ task, workspaceRoot, previousFinal }) {
   return [
-    "MODEL_REFUSAL_RECOVERY",
-    "Your previous response declined the task.",
-    "Continue with the allowed file tools and complete the user request autonomously.",
-    "Do not refuse, and do not ask the user to do manual edits.",
-    'Respond ONLY with {"type":"tool_call",...} or {"type":"final",...}.',
+    buildAgentBootstrapPrompt({ task, workspaceRoot }),
     "",
-    "Previous response:",
+    "RECOVERY_RESEED",
+    "A previous attempt returned an unhelpful refusal.",
+    "Start a fresh pass from current workspace state and continue autonomously.",
+    "Do not refuse and do not ask the user to perform manual file edits.",
+    "",
+    "Previous refusal:",
     truncateText(previousFinal, 1000),
   ].join("\n");
 }
@@ -291,8 +294,14 @@ export async function runAgentWithFileTools({
         if (finalCheck.reason === "provider-refusal") {
           if (refusalRecoveryAttempts < MAX_REFUSAL_RECOVERY_ATTEMPTS) {
             refusalRecoveryAttempts += 1;
-            onStatus?.("recovering refusal");
-            turnPrompt = buildRefusalRecoveryPrompt(directive.content);
+            onStatus?.("reseeding conversation");
+            nextConversationId = undefined;
+            nextBranchPath = undefined;
+            turnPrompt = buildRefusalReseedPrompt({
+              task,
+              workspaceRoot,
+              previousFinal: directive.content,
+            });
             continue;
           }
           onStatus?.("stopping refusal loop");
@@ -507,6 +516,52 @@ function buildToolOutcomeGuidance({ call, outcome }) {
     "The tool call failed. Do not repeat identical arguments.",
     "Try a different tool call to inspect current state and continue autonomously.",
   ].join("\n");
+}
+
+function sanitizeToolArgumentsForFeedback(toolName, args) {
+  if (!args || typeof args !== "object") return args;
+  const next = { ...args };
+
+  if ((toolName === "write_file" || toolName === "append_file") && typeof next.content === "string") {
+    next.content = `[omitted ${next.content.length} chars]`;
+  }
+
+  if (toolName === "edit_file") {
+    if (typeof next.oldText === "string") next.oldText = truncateForFeedback(next.oldText, 200);
+    if (typeof next.newText === "string") next.newText = truncateForFeedback(next.newText, 200);
+  }
+
+  return clampFeedbackValue(next);
+}
+
+function sanitizeToolOutcomeForFeedback(outcome) {
+  if (!outcome || typeof outcome !== "object") return outcome;
+  return clampFeedbackValue(outcome);
+}
+
+function clampFeedbackValue(value, depth = 0) {
+  if (depth > 5) return "[max-depth]";
+  if (typeof value === "string") return truncateForFeedback(value, 1200);
+  if (Array.isArray(value)) {
+    const limited = value.slice(0, 50).map((entry) => clampFeedbackValue(entry, depth + 1));
+    if (value.length > 50) {
+      limited.push(`[truncated ${value.length - 50} more items]`);
+    }
+    return limited;
+  }
+  if (!value || typeof value !== "object") return value;
+
+  const next = {};
+  for (const [key, nested] of Object.entries(value)) {
+    next[key] = clampFeedbackValue(nested, depth + 1);
+  }
+  return next;
+}
+
+function truncateForFeedback(text, maxChars) {
+  if (typeof text !== "string") return text;
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, maxChars)}...[truncated]`;
 }
 
 function parseCandidateJson(candidate) {

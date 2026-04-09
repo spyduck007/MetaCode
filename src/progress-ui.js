@@ -74,6 +74,7 @@ export function describeAgentStatusFriendly(statusText) {
   if (text === "format correction") return "reformatting response";
   if (text === "unsticking loop") return "trying a different approach";
   if (text === "autonomous execution") return "starting from scratch automatically";
+  if (text === "reseeding conversation") return "starting a fresh conversation";
   if (text === "recovering refusal") return "recovering from model refusal";
   if (text === "stopping refusal loop") return "stopping refusal loop";
   if (text === "stopping invalid loop") return "stopping retry loop";
