@@ -8,6 +8,7 @@ Meta Code is an unofficial Meta AI terminal coding client with:
 - Slash-command-first workflow (`/help`, `/mode`, `/login`, `/logout`, etc.)
 - Live slash command suggestions + Tab autocomplete
 - Friendly progress updates with animated status indicators
+- Guarded follow-up questions when the agent is truly blocked
 - Session persistence
 - `think_fast` and `think_hard` modes
 - Tool-enabled agent behavior by default for all prompts
@@ -51,6 +52,7 @@ meta-code --yolo "Create a starter React app in this folder"
 ```
 
 All prompts automatically run through the file-tool agent runtime.
+If the agent gets genuinely blocked, it may ask a single follow-up clarification (multiple choice + custom input or free text), then continue automatically.
 
 ## Slash commands (in full-screen mode)
 

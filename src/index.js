@@ -17,6 +17,7 @@ import {
   readSessionState,
   resetSession,
   updateSession,
+  writeSessionState,
 } from "./sessions.js";
 import { startTui } from "./tui.js";
 import { runAgentWithFileTools } from "./agent-orchestrator.js";
@@ -121,6 +122,7 @@ async function runAgentTask({
   onToolCall,
   onToolResult,
   onCommandApproval,
+  onFollowUpQuestion,
 }) {
   if (!client) {
     throw new Error("No active auth session. Run /login first.");
@@ -137,6 +139,7 @@ async function runAgentTask({
     onToolCall,
     onToolResult,
     onCommandApproval,
+    onFollowUpQuestion,
   });
 }
 
@@ -183,6 +186,21 @@ async function deleteSessionEverywhere(name, { clientOverride } = {}) {
   };
 }
 
+async function cleanupUnusedLaunchSession({ sessionName, chattedSessions }) {
+  if (!sessionName) return;
+  if (chattedSessions?.has(sessionName)) return;
+
+  const state = await readSessionState();
+  if (!state.sessions?.[sessionName]) return;
+
+  delete state.sessions[sessionName];
+  if (state.activeSession === sessionName) {
+    state.activeSession = Object.keys(state.sessions)[0] ?? null;
+  }
+
+  await writeSessionState(state);
+}
+
 async function promptCommandApproval({ command, cwd, timeoutMs, yoloState, progress }) {
   if (yoloState.enabled) {
     progress(`running command in yolo mode: ${command}`);
@@ -221,6 +239,58 @@ async function promptCommandApproval({ command, cwd, timeoutMs, yoloState, progr
   return { approved: false, reason: `User denied command: ${command}` };
 }
 
+async function promptAgentFollowUp({ question, choices = [], allowFreeform = true, progress }) {
+  const normalizedQuestion = String(question || "").trim();
+  if (!normalizedQuestion) return null;
+
+  if (!stdin.isTTY || !stderr.isTTY) {
+    progress?.("agent asked for clarification but input is non-interactive");
+    return null;
+  }
+
+  stderr.write(`\n${chalk.yellow("Agent needs clarification")}\n${normalizedQuestion}\n`);
+  const normalizedChoices = Array.isArray(choices)
+    ? choices
+        .map((choice) => String(choice ?? "").trim())
+        .filter(Boolean)
+        .slice(0, 8)
+    : [];
+
+  const rl = createInterface({ input: stdin, output: stderr });
+  try {
+    if (normalizedChoices.length > 0) {
+      normalizedChoices.forEach((choice, index) => {
+        stderr.write(`${index + 1}. ${choice}\n`);
+      });
+      if (allowFreeform) {
+        stderr.write(`${normalizedChoices.length + 1}. Provide custom answer\n`);
+      }
+
+      const upperBound = normalizedChoices.length + (allowFreeform ? 1 : 0);
+      const response = (await rl.question(`Choose 1-${upperBound}, or type your answer: `)).trim();
+      if (!response) return null;
+
+      if (/^\d+$/.test(response)) {
+        const selected = Number.parseInt(response, 10);
+        if (selected >= 1 && selected <= normalizedChoices.length) {
+          return normalizedChoices[selected - 1];
+        }
+        if (allowFreeform && selected === normalizedChoices.length + 1) {
+          const custom = (await rl.question("Your custom answer: ")).trim();
+          return custom || null;
+        }
+      }
+
+      return response;
+    }
+
+    const answer = (await rl.question("Your answer: ")).trim();
+    return answer || null;
+  } finally {
+    rl.close();
+  }
+}
+
 const program = new Command();
 
 program
@@ -241,7 +311,7 @@ program
           requireClient: false,
           freshSessionOnLaunch: true,
         });
-        await startTui({
+        const tuiResult = await startTui({
           client: runtime.client,
           sessionName: runtime.sessionName,
           session: runtime.session,
@@ -268,6 +338,7 @@ program
             onToolCall,
             onToolResult,
             onCommandApproval,
+            onFollowUpQuestion,
           }) =>
             runAgentTask({
               client: client ?? runtime.client,
@@ -278,8 +349,15 @@ program
               onToolCall,
               onToolResult,
               onCommandApproval,
+              onFollowUpQuestion,
             }),
         });
+        if (runtime.launchedFreshSession) {
+          await cleanupUnusedLaunchSession({
+            sessionName: runtime.sessionName,
+            chattedSessions: new Set(tuiResult?.chattedSessions ?? []),
+          });
+        }
         return;
       }
 
@@ -316,6 +394,14 @@ program
             cwd,
             timeoutMs,
             yoloState,
+            progress,
+          });
+        },
+        onFollowUpQuestion: async ({ question, choices, allowFreeform }) => {
+          return promptAgentFollowUp({
+            question,
+            choices,
+            allowFreeform,
             progress,
           });
         },

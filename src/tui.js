@@ -355,6 +355,186 @@ function showCommandApprovalMenu(screen, { command, cwd }) {
   });
 }
 
+function showTextInputMenu(screen, { title, question }) {
+  return new Promise((resolve) => {
+    const wrapper = blessed.box({
+      parent: screen,
+      top: "center",
+      left: "center",
+      width: "78%",
+      height: 12,
+      border: "line",
+      label: ` ${title} `,
+      tags: true,
+      style: {
+        border: { fg: "cyan" },
+        bg: "black",
+      },
+    });
+
+    blessed.box({
+      parent: wrapper,
+      top: 0,
+      left: 0,
+      width: "100%-3",
+      height: 3,
+      tags: true,
+      content: escapeTags(question),
+    });
+
+    const input = blessed.textbox({
+      parent: wrapper,
+      top: 3,
+      left: 0,
+      width: "100%-3",
+      height: 3,
+      border: "line",
+      inputOnFocus: true,
+      keys: true,
+      mouse: true,
+      vi: true,
+      padding: { left: 1, right: 1 },
+      style: {
+        border: { fg: "yellow" },
+        focus: {
+          border: { fg: "magenta" },
+        },
+      },
+    });
+
+    blessed.box({
+      parent: wrapper,
+      top: 7,
+      left: 0,
+      width: "100%-3",
+      height: 1,
+      tags: true,
+      content: "{gray-fg}Enter submit • Esc cancel{/}",
+    });
+
+    const close = (value) => {
+      wrapper.detach();
+      screen.render();
+      resolve(value);
+    };
+
+    input.on("submit", (value) => {
+      const normalized = String(value || "").trim();
+      close(normalized || null);
+    });
+    input.key(["escape"], () => close(null));
+    wrapper.key(["escape"], () => close(null));
+    wrapper.setFront();
+    input.focus();
+    screen.render();
+  });
+}
+
+async function showFollowUpQuestionMenu(screen, { question, choices, allowFreeform = true }) {
+  const normalizedQuestion = String(question || "").trim();
+  const normalizedChoices = Array.isArray(choices)
+    ? choices
+        .map((choice) => String(choice ?? "").trim())
+        .filter(Boolean)
+        .slice(0, 8)
+    : [];
+
+  if (normalizedChoices.length === 0) {
+    return showTextInputMenu(screen, {
+      title: "Agent needs clarification",
+      question: normalizedQuestion || "Please provide guidance:",
+    });
+  }
+
+  return new Promise((resolve) => {
+    const choiceRows = normalizedChoices.length + (allowFreeform ? 1 : 0) + 1;
+    const menuHeight = Math.max(12, Math.min(24, choiceRows + 8));
+    const entries = [
+      ...normalizedChoices.map((choice) => ({ label: choice, value: choice })),
+      ...(allowFreeform ? [{ label: "Provide custom answer...", value: "__custom__" }] : []),
+      { label: "Cancel", value: "__cancel__" },
+    ];
+
+    const wrapper = blessed.box({
+      parent: screen,
+      top: "center",
+      left: "center",
+      width: "82%",
+      height: menuHeight,
+      border: "line",
+      label: " Agent follow-up ",
+      tags: true,
+      style: {
+        border: { fg: "cyan" },
+        bg: "black",
+      },
+    });
+
+    blessed.box({
+      parent: wrapper,
+      top: 0,
+      left: 0,
+      width: "100%-3",
+      height: 3,
+      tags: true,
+      content: escapeTags(normalizedQuestion),
+    });
+
+    const list = blessed.list({
+      parent: wrapper,
+      top: 3,
+      left: 0,
+      width: "100%-3",
+      height: "100%-5",
+      keys: true,
+      mouse: true,
+      vi: true,
+      style: {
+        item: { fg: "white", bg: "black" },
+        fg: "white",
+        bg: "black",
+        selected: {
+          bg: "magenta",
+          fg: "white",
+          bold: true,
+        },
+      },
+      items: entries.map((entry) => entry.label),
+    });
+
+    const close = (value) => {
+      wrapper.detach();
+      screen.render();
+      resolve(value);
+    };
+
+    list.key(["escape", "q"], () => close(null));
+    list.on("select", async (_item, index) => {
+      const selected = entries[index];
+      if (!selected || selected.value === "__cancel__") {
+        close(null);
+        return;
+      }
+      if (selected.value === "__custom__") {
+        wrapper.detach();
+        screen.render();
+        const custom = await showTextInputMenu(screen, {
+          title: "Custom clarification",
+          question: normalizedQuestion,
+        });
+        resolve(custom);
+        return;
+      }
+      close(selected.value);
+    });
+
+    wrapper.setFront();
+    list.focus();
+    list.select(0);
+    screen.render();
+  });
+}
+
 function buildBannerMessage() {
   return [
     ...TITLE_ART_LINES,
@@ -517,6 +697,7 @@ export async function startTui({
   let yoloMode = false;
   let liveProgressMessage = null;
   let liveProgressBaseText = "";
+  const chattedSessions = new Set();
 
   function renderStatusBar() {
     const spinner = busy ? SPINNER_FRAMES[spinnerIndex % SPINNER_FRAMES.length] : ">";
@@ -888,7 +1069,9 @@ export async function startTui({
           friendly === "trying a different approach" ||
           friendly === "starting from scratch automatically" ||
           friendly === "reformatting response" ||
-          friendly === "continuing execution"
+          friendly === "continuing execution" ||
+          friendly === "waiting for your input" ||
+          friendly === "continuing with assumptions"
         ) {
           pushProgress(friendly);
         }
@@ -934,6 +1117,26 @@ export async function startTui({
         pushMessage("system", "command denied.");
         return { approved: false, reason: "User denied command execution." };
       },
+      onFollowUpQuestion: async ({ question, choices, allowFreeform }) => {
+        setStatus("waiting for your input");
+        pushProgress("waiting for your input", { force: true });
+        const answer = await showFollowUpQuestionMenu(screen, {
+          question,
+          choices,
+          allowFreeform,
+        });
+        if (answer) {
+          pushMessage("user", answer, { forceBottom: true });
+          pushProgress("continuing with your clarification", { force: true });
+        } else {
+          pushMessage("system", "No clarification provided. Continuing with best assumptions.", {
+            forceBottom: true,
+          });
+          pushProgress("continuing with assumptions", { force: true });
+        }
+        setStatus("working");
+        return answer;
+      },
     });
     setStatus("done");
     pushMessage("assistant", result.content, { forceBottom: true });
@@ -945,6 +1148,7 @@ export async function startTui({
       mode: normalizeMode(result.mode),
     };
     await saveSession(currentSessionName, currentSession);
+    chattedSessions.add(currentSessionName);
     renderMessages({ forceBottom: true });
   }
 
@@ -980,7 +1184,10 @@ export async function startTui({
     resolving = true;
     stopBusyAnimation();
     screen.destroy();
-    resolve();
+    resolve({
+      chattedSessions: [...chattedSessions],
+      activeSessionName: currentSessionName,
+    });
   }
 
   setStatus("ready");

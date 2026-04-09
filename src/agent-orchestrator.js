@@ -5,6 +5,9 @@ import { promises as fs } from "node:fs";
 const MAX_STEPS_DEFAULT = 24;
 const MAX_TOOL_RESULT_CHARS = 18_000;
 const MAX_REPEAT_TOOL_CALLS = 3;
+const MAX_FOLLOW_UP_QUESTIONS = 1;
+const MIN_FOLLOW_UP_STEP = 3;
+const MIN_FOLLOW_UP_TOOL_CALLS = 2;
 
 function safeJsonStringify(value) {
   return JSON.stringify(value, null, 2);
@@ -53,13 +56,15 @@ function buildAgentBootstrapPrompt({ task, workspaceRoot }) {
     "Output format rules (strict):",
     '1) For a tool call, respond ONLY with JSON: {"type":"tool_call","name":"...","arguments":{...},"thought":"short status"}',
     '2) For the final user answer, respond ONLY with JSON: {"type":"final","content":"..."}',
-    "3) Do not include markdown unless it is inside the JSON string fields.",
-    "4) Act autonomously: do not ask the user for permission to create/edit files unless the user explicitly asks you to ask.",
-    "5) If the workspace is empty and the task asks to build/create from scratch, immediately create the needed files and folders.",
-    "6) Use tools when needed to inspect or change files; do not invent file contents.",
-    "7) run_command can be denied by the user; if denied, continue with non-command tools when possible.",
-    "8) Keep thought short (max one sentence) and action-oriented.",
-    "9) Prefer minimal file edits and stay inside workspace root.",
+    '3) Only when truly blocked and missing required user intent, you may ask ONE follow-up using JSON: {"type":"follow_up","question":"...","choices":["..."],"allow_freeform":true,"thought":"..."}',
+    "4) Do not ask follow-up questions early. First make meaningful progress with tools.",
+    "5) Do not include markdown unless it is inside the JSON string fields.",
+    "6) Act autonomously: do not ask the user for permission to create/edit files unless the user explicitly asks you to ask.",
+    "7) If the workspace is empty and the task asks to build/create from scratch, immediately create the needed files and folders.",
+    "8) Use tools when needed to inspect or change files; do not invent file contents.",
+    "9) run_command can be denied by the user; if denied, continue with non-command tools when possible.",
+    "10) Keep thought short (max one sentence) and action-oriented.",
+    "11) Prefer minimal file edits and stay inside workspace root.",
     "",
     `User task: ${task}`,
   ].join("\n");
@@ -87,6 +92,7 @@ function buildFormatRepairPrompt(receivedText) {
     "Respond again using ONLY one JSON object in one of these forms:",
     '{"type":"tool_call","name":"<tool_name>","arguments":{...}}',
     '{"type":"final","content":"<final answer>"}',
+    '{"type":"follow_up","question":"<brief question>","choices":["<option>","<option>"],"allow_freeform":true}',
     "",
     "Previous invalid response:",
     truncateText(receivedText, 4000),
@@ -108,6 +114,50 @@ function buildForceFinalizePrompt() {
     "Now return your best possible final answer immediately.",
     'Respond ONLY with JSON: {"type":"final","content":"..."}',
     "Do not call additional tools in this response.",
+  ].join("\n");
+}
+
+function buildFollowUpDeniedPrompt({
+  reason,
+  step,
+  toolCallsExecuted,
+  question,
+  maxFollowUps = MAX_FOLLOW_UP_QUESTIONS,
+}) {
+  const reasonLine =
+    reason === "already_asked"
+      ? `A follow-up question was already used in this task. Do not ask more than ${maxFollowUps}.`
+      : reason === "unavailable"
+        ? "Follow-up questions are unavailable in this runtime. Continue autonomously."
+        : `Do not ask a follow-up yet. Current progress: step=${step}, tool_calls=${toolCallsExecuted}.`;
+  return [
+    "FOLLOW_UP_DENIED",
+    reasonLine,
+    "Continue autonomously with tools and best assumptions.",
+    "Only ask follow-up when genuinely blocked after meaningful progress.",
+    "",
+    `Rejected follow-up: ${truncateText(question || "(none)", 500)}`,
+    'Respond ONLY with {"type":"tool_call",...} or {"type":"final",...}.',
+  ].join("\n");
+}
+
+function buildFollowUpAnswerPrompt({ question, answer }) {
+  if (!answer) {
+    return [
+      "FOLLOW_UP_SKIPPED",
+      `Question asked: ${question}`,
+      "The user skipped clarification.",
+      "Proceed with the best reasonable assumptions and finish the task.",
+      'Respond ONLY with {"type":"tool_call",...} or {"type":"final",...}.',
+    ].join("\n");
+  }
+
+  return [
+    "USER_CLARIFICATION",
+    `Question asked: ${question}`,
+    `User answer: ${answer}`,
+    "Use this clarification and continue solving the task.",
+    'Respond ONLY with {"type":"tool_call",...} or {"type":"final",...}.',
   ].join("\n");
 }
 
@@ -154,6 +204,7 @@ export async function runAgentWithFileTools({
   onToolCall,
   onToolResult,
   onCommandApproval,
+  onFollowUpQuestion,
 }) {
   let nextConversationId = conversationId;
   let nextBranchPath = currentBranchPath;
@@ -162,6 +213,7 @@ export async function runAgentWithFileTools({
   let lastToolCallSignature = "";
   let repeatToolCallCount = 0;
   let toolCallsExecuted = 0;
+  let followUpsAsked = 0;
   const touchedFiles = new Set();
 
   for (let step = 1; step <= maxSteps; step += 1) {
@@ -212,6 +264,52 @@ export async function runAgentWithFileTools({
         mode: nextMode,
         steps: step,
       };
+    }
+
+    if (directive.type === "follow_up") {
+      if (directive.thought) {
+        onThinking?.(directive.thought);
+      }
+      if (
+        !shouldAllowFollowUpRequest({
+          step,
+          toolCallsExecuted,
+          followUpsAsked,
+        })
+      ) {
+        onStatus?.("continuing without follow-up");
+        turnPrompt = buildFollowUpDeniedPrompt({
+          reason: followUpsAsked >= MAX_FOLLOW_UP_QUESTIONS ? "already_asked" : "too_early",
+          step,
+          toolCallsExecuted,
+          question: directive.question,
+        });
+        continue;
+      }
+
+      if (typeof onFollowUpQuestion !== "function") {
+        onStatus?.("continuing without follow-up");
+        turnPrompt = buildFollowUpDeniedPrompt({
+          reason: "unavailable",
+          step,
+          toolCallsExecuted,
+          question: directive.question,
+        });
+        continue;
+      }
+
+      onStatus?.("awaiting user follow-up");
+      const answer = await onFollowUpQuestion({
+        question: directive.question,
+        choices: directive.choices,
+        allowFreeform: directive.allowFreeform,
+      });
+      followUpsAsked += 1;
+      turnPrompt = buildFollowUpAnswerPrompt({
+        question: directive.question,
+        answer: typeof answer === "string" ? answer.trim() : "",
+      });
+      continue;
     }
 
     if (directive.type !== "tool_call") {
@@ -377,6 +475,11 @@ function coerceParsedDirective(parsed) {
     };
   }
 
+  const followUpDirective = extractFollowUpDirective(parsed);
+  if (followUpDirective) {
+    return followUpDirective;
+  }
+
   const finalText = extractFinalTextFromParsed(parsed);
   if (parsed?.type === "final" && typeof finalText === "string") {
     return {
@@ -401,6 +504,53 @@ function coerceParsedDirective(parsed) {
   }
 
   return null;
+}
+
+function extractFollowUpDirective(parsed) {
+  if (!parsed || typeof parsed !== "object") return null;
+  if (parsed.ask_user && typeof parsed.ask_user === "object") {
+    const nested = extractFollowUpDirective({
+      ...parsed.ask_user,
+      type: parsed.ask_user.type ?? "follow_up",
+      thought:
+        typeof parsed.ask_user.thought === "string" ? parsed.ask_user.thought : parsed.thought,
+    });
+    if (nested) return nested;
+  }
+
+  const type = String(parsed.type || "").trim().toLowerCase();
+  if (!["follow_up", "followup", "ask_user"].includes(type)) return null;
+
+  const question =
+    (typeof parsed.question === "string" && parsed.question.trim()) ||
+    (typeof parsed.prompt === "string" && parsed.prompt.trim());
+  if (!question) return null;
+
+  return {
+    type: "follow_up",
+    question,
+    choices: normalizeFollowUpChoices(parsed.choices ?? parsed.options ?? parsed.responses),
+    allowFreeform:
+      parsed.allow_freeform !== false &&
+      parsed.allowFreeform !== false &&
+      parsed.allowCustom !== false,
+    thought: typeof parsed.thought === "string" ? parsed.thought.trim() : "",
+  };
+}
+
+function normalizeFollowUpChoices(rawChoices) {
+  if (!Array.isArray(rawChoices)) return [];
+  return rawChoices
+    .map((choice) => String(choice ?? "").trim())
+    .filter(Boolean)
+    .slice(0, 8);
+}
+
+function shouldAllowFollowUpRequest({ step, toolCallsExecuted, followUpsAsked }) {
+  if (followUpsAsked >= MAX_FOLLOW_UP_QUESTIONS) return false;
+  if (step < MIN_FOLLOW_UP_STEP) return false;
+  if (toolCallsExecuted < MIN_FOLLOW_UP_TOOL_CALLS) return false;
+  return true;
 }
 
 function extractFinalTextFromParsed(parsed) {

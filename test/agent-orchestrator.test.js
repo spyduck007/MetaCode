@@ -49,6 +49,16 @@ test("extractAgentDirective supports final value key", () => {
   assert.equal(directive.content, "Done using value key.");
 });
 
+test("extractAgentDirective parses follow-up directive with choices", () => {
+  const directive = extractAgentDirective(
+    '{"type":"follow_up","question":"Pick a stack","choices":["React","Vue"],"allow_freeform":true}'
+  );
+  assert.equal(directive.type, "follow_up");
+  assert.equal(directive.question, "Pick a stack");
+  assert.deepEqual(directive.choices, ["React", "Vue"]);
+  assert.equal(directive.allowFreeform, true);
+});
+
 test("extractAgentDirective unwraps escaped final value JSON output", () => {
   const directive = extractAgentDirective(
     '\\{"type":"final","value":"Done from escaped value payload."}'
@@ -105,6 +115,100 @@ test("runAgentWithFileTools executes tool call then returns final", async () => 
     assert.equal(toolCalls[0].name, "list_dir");
     assert.equal(toolResults.length, 1);
     assert.equal(toolResults[0].ok, true);
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("runAgentWithFileTools asks one follow-up when stuck after progress", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "meta-agent-test-"));
+  try {
+    await executeFileToolCall(
+      {
+        name: "write_file",
+        arguments: { path: "hello.txt", content: "hi" },
+      },
+      { workspaceRoot: workspace }
+    );
+
+    const scriptedResponses = [
+      '```json\n{"type":"tool_call","name":"list_dir","arguments":{"path":"."}}\n```',
+      '```json\n{"type":"tool_call","name":"read_file","arguments":{"path":"hello.txt"}}\n```',
+      '```json\n{"type":"follow_up","question":"Choose output format","choices":["json","markdown"],"allow_freeform":true}\n```',
+      '```json\n{"type":"final","content":"Done with the requested format."}\n```',
+    ];
+
+    const fakeClient = {
+      async sendMessage() {
+        const content = scriptedResponses.shift();
+        return {
+          content,
+          conversationId: "conv-follow-up",
+          currentBranchPath: "3",
+          mode: "think_fast",
+        };
+      },
+    };
+
+    const asked = [];
+    const result = await runAgentWithFileTools({
+      client: fakeClient,
+      task: "Inspect files and finish with the preferred format.",
+      conversationId: "conv-follow-up",
+      currentBranchPath: "0",
+      mode: "think_fast",
+      workspaceRoot: workspace,
+      onFollowUpQuestion: async (questionPayload) => {
+        asked.push(questionPayload);
+        return "markdown";
+      },
+    });
+
+    assert.equal(result.content, "Done with the requested format.");
+    assert.equal(asked.length, 1);
+    assert.equal(asked[0].question, "Choose output format");
+    assert.deepEqual(asked[0].choices, ["json", "markdown"]);
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("runAgentWithFileTools blocks early follow-up requests", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "meta-agent-test-"));
+  try {
+    const scriptedResponses = [
+      '```json\n{"type":"follow_up","question":"What should I do next?","choices":["A","B"]}\n```',
+      '```json\n{"type":"final","content":"Used best assumptions and completed."}\n```',
+    ];
+
+    const fakeClient = {
+      async sendMessage() {
+        const content = scriptedResponses.shift();
+        return {
+          content,
+          conversationId: "conv-early-follow-up",
+          currentBranchPath: "1",
+          mode: "think_fast",
+        };
+      },
+    };
+
+    let followUpCalls = 0;
+    const result = await runAgentWithFileTools({
+      client: fakeClient,
+      task: "Do the task end-to-end.",
+      conversationId: "conv-early-follow-up",
+      currentBranchPath: "0",
+      mode: "think_fast",
+      workspaceRoot: workspace,
+      onFollowUpQuestion: async () => {
+        followUpCalls += 1;
+        return "A";
+      },
+    });
+
+    assert.equal(result.content, "Used best assumptions and completed.");
+    assert.equal(followUpCalls, 0);
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }
