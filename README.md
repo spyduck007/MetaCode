@@ -12,6 +12,11 @@ Meta Code is an unofficial Meta AI terminal coding client with:
 - `think_fast` and `think_hard` modes
 - Tool-enabled agent behavior by default for all prompts
 
+> [!WARNING]
+> Meta Code is in **very early production**. Expect bugs and rough edges.
+> If you find an issue, please report it in the GitHub Issues tab:
+> https://github.com/spyduck007/MetaCode/issues
+
 ## Install
 
 ```bash
@@ -56,7 +61,7 @@ All prompts automatically run through the file-tool agent runtime.
 - `/logout` — clears config cookie for this CLI
 - `/auth` — show current auth source and cookie health
 - `/new` — start a fresh conversation
-- `/sessions` — open session manager (↑/↓ to select, `Enter` to switch, `D` to delete hovered session locally + on Meta; requires auth)
+- `/sessions` — open session manager (↑/↓ to select, `Enter` to switch, `D` to delete hovered non-active session locally + on Meta; requires auth)
 - `/sessions <name>` — switch session directly
 - `/sessions delete <name>` — delete a stored session locally + on Meta
 - `/status` — show session/mode/auth status
