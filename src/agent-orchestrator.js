@@ -76,6 +76,8 @@ function buildAgentBootstrapPrompt({ task, workspaceRoot, workspaceMemory }) {
     "9) run_command can be denied by the user; if denied, continue with non-command tools when possible.",
     "10) Keep thought short (max one sentence) and action-oriented.",
     "11) Prefer minimal file edits and stay inside workspace root.",
+    "12) Use glob_files to find files by pattern (e.g. **/*.ts) instead of listing and filtering manually.",
+    "13) When making surgical line edits, edit_file with exact oldText is preferred over rewriting the whole file.",
     "",
     `User task: ${task}`,
   ].join("\n");

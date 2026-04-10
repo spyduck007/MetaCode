@@ -8,6 +8,35 @@ import {
 } from "./constants.js";
 import { parseSseStream } from "./sse.js";
 
+const NETWORK_RETRY_ATTEMPTS = 2;
+const NETWORK_RETRY_DELAY_MS = 1500;
+
+function isRetryableError(error) {
+  if (!error) return false;
+  const msg = String(error.message ?? "").toLowerCase();
+  // Retry on network/connection errors but not on auth failures or client errors
+  return (
+    error.code === "ECONNRESET" ||
+    error.code === "ECONNREFUSED" ||
+    error.code === "ETIMEDOUT" ||
+    error.code === "ENOTFOUND" ||
+    msg.includes("fetch failed") ||
+    msg.includes("network error") ||
+    msg.includes("econnreset") ||
+    msg.includes("socket hang up") ||
+    msg.includes("connection refused")
+  );
+}
+
+function isRetryableStatus(status) {
+  // Retry on server errors (5xx) but not on client errors (4xx)
+  return status >= 500 && status < 600;
+}
+
+async function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function toUniqueMessageId() {
   return `${Date.now()}${Math.floor(Math.random() * 900 + 100)}`;
 }
@@ -51,11 +80,12 @@ export function buildDeleteConversationPayload({ conversationId }) {
 }
 
 export class MetaAIClient {
-  constructor({ cookie }) {
+  constructor({ cookie, retryDelayMs } = {}) {
     if (!cookie) {
       throw new Error("Cookie is required for authenticated Meta AI requests.");
     }
     this.cookie = cookie;
+    this._retryDelayMs = typeof retryDelayMs === "number" ? retryDelayMs : NETWORK_RETRY_DELAY_MS;
   }
 
   async sendMessage({
@@ -78,66 +108,87 @@ export class MetaAIClient {
       mode: normalizedMode,
     });
 
-    const response = await fetch(GRAPHQL_URL, {
-      method: "POST",
-      headers: {
-        accept: "text/event-stream",
-        "content-type": "application/json",
-        origin: "https://www.meta.ai",
-        referer: "https://www.meta.ai/",
-        cookie: this.cookie,
-      },
-      body: JSON.stringify(payload),
-    });
-
-    if (!response.ok) {
-      const errorBody = await response.text();
-      throw new Error(`Meta API request failed: ${response.status} ${errorBody}`);
-    }
-
-    if (!response.body) {
-      throw new Error("Meta API response had no stream body.");
-    }
-
-    let assistantText = "";
-    let resultConversationId = conversationId;
-    let resultBranchPath = currentBranchPath;
-    let resultConversationType = normalizedMode;
-
-    for await (const event of parseSseStream(response.body)) {
-      onEvent?.(event);
-      if (event.event === "complete") break;
-      if (event.event !== "next" || !event.data) continue;
-
-      let parsed;
+    let lastError;
+    for (let attempt = 0; attempt <= NETWORK_RETRY_ATTEMPTS; attempt += 1) {
+      if (attempt > 0) {
+        await sleep(this._retryDelayMs * attempt);
+      }
       try {
-        parsed = JSON.parse(event.data);
-      } catch {
-        continue;
-      }
+        const response = await fetch(GRAPHQL_URL, {
+          method: "POST",
+          headers: {
+            accept: "text/event-stream",
+            "content-type": "application/json",
+            origin: "https://www.meta.ai",
+            referer: "https://www.meta.ai/",
+            cookie: this.cookie,
+          },
+          body: JSON.stringify(payload),
+        });
 
-      const streamNode = parsed?.data?.sendMessageStream;
-      if (!streamNode) continue;
+        if (!response.ok) {
+          const errorBody = await response.text();
+          const err = new Error(`Meta API request failed: ${response.status} ${errorBody}`);
+          err.status = response.status;
+          if (isRetryableStatus(response.status) && attempt < NETWORK_RETRY_ATTEMPTS) {
+            lastError = err;
+            continue;
+          }
+          throw err;
+        }
 
-      if (streamNode.__typename === "AssistantMessage") {
-        const nextText = streamNode.content ?? "";
-        const delta = nextText.startsWith(assistantText) ? nextText.slice(assistantText.length) : nextText;
-        if (delta) onDelta?.(delta, streamNode);
-        assistantText = nextText;
-        if (streamNode.conversationId) resultConversationId = streamNode.conversationId;
-        if (streamNode.branchPath) resultBranchPath = streamNode.branchPath;
-      } else if (streamNode.__typename === "Conversation") {
-        if (streamNode.id) resultConversationId = streamNode.id;
-        if (streamNode.type) resultConversationType = streamNode.type.toLowerCase();
+        if (!response.body) {
+          throw new Error("Meta API response had no stream body.");
+        }
+
+        let assistantText = "";
+        let resultConversationId = conversationId;
+        let resultBranchPath = currentBranchPath;
+        let resultConversationType = normalizedMode;
+
+        for await (const event of parseSseStream(response.body)) {
+          onEvent?.(event);
+          if (event.event === "complete") break;
+          if (event.event !== "next" || !event.data) continue;
+
+          let parsed;
+          try {
+            parsed = JSON.parse(event.data);
+          } catch {
+            continue;
+          }
+
+          const streamNode = parsed?.data?.sendMessageStream;
+          if (!streamNode) continue;
+
+          if (streamNode.__typename === "AssistantMessage") {
+            const nextText = streamNode.content ?? "";
+            const delta = nextText.startsWith(assistantText) ? nextText.slice(assistantText.length) : nextText;
+            if (delta) onDelta?.(delta, streamNode);
+            assistantText = nextText;
+            if (streamNode.conversationId) resultConversationId = streamNode.conversationId;
+            if (streamNode.branchPath) resultBranchPath = streamNode.branchPath;
+          } else if (streamNode.__typename === "Conversation") {
+            if (streamNode.id) resultConversationId = streamNode.id;
+            if (streamNode.type) resultConversationType = streamNode.type.toLowerCase();
+          }
+        }
+
+        return {
+          content: assistantText,
+          conversationId: resultConversationId,
+          currentBranchPath: resultBranchPath,
+          mode: resultConversationType,
+        };
+      } catch (error) {
+        if (isRetryableError(error) && attempt < NETWORK_RETRY_ATTEMPTS) {
+          lastError = error;
+          continue;
+        }
+        throw error;
       }
     }
-
-    return {
-      content: assistantText,
-      conversationId: resultConversationId,
-      currentBranchPath: resultBranchPath,
-      mode: resultConversationType,
-    };
+    throw lastError;
   }
 
   async deleteConversation({ conversationId }) {

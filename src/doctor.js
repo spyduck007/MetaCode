@@ -3,6 +3,7 @@ import path from "node:path";
 import { promises as fs } from "node:fs";
 import { MIN_AGENT_STEPS, MAX_AGENT_STEPS, normalizeAgentSteps } from "./max-steps.js";
 import { normalizeMode } from "./meta-client.js";
+import { WORKSPACE_MEMORY_FILES } from "./workspace-memory.js";
 
 function parseNodeMajor(version) {
   const match = String(version || "").match(/^v?(\d+)/);
@@ -77,6 +78,27 @@ export async function runDoctor({
   }
 
   const hasErrors = checks.some((check) => check.status === "error");
+
+  // Check for workspace memory
+  const foundMemoryFiles = [];
+  for (const memFile of WORKSPACE_MEMORY_FILES) {
+    const memPath = path.join(workspaceRoot, memFile);
+    try {
+      await fs.access(memPath);
+      foundMemoryFiles.push(memFile);
+    } catch {
+      // file doesn't exist
+    }
+  }
+  checks.push({
+    name: "workspace-memory",
+    status: foundMemoryFiles.length > 0 ? "ok" : "warn",
+    detail:
+      foundMemoryFiles.length > 0
+        ? `Found: ${foundMemoryFiles.join(", ")}`
+        : `No workspace memory file found. Create META.md, METACODE.md, or .meta-code/instructions.md to add persistent project instructions.`,
+  });
+
   return {
     ok: !hasErrors,
     checks,
