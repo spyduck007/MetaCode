@@ -84,6 +84,13 @@ test("describeToolCallFriendly unknown tool returns generic message", () => {
   );
 });
 
+test("describeToolCallFriendly handles mcp tool names", () => {
+  assert.equal(
+    describeToolCallFriendly({ name: "mcp.docs.search", arguments: {} }),
+    "calling mcp.docs.search"
+  );
+});
+
 test("describeToolCallFriendly run_command with command", () => {
   assert.equal(
     describeToolCallFriendly({ name: "run_command", arguments: { command: "npm test" } }),

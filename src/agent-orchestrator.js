@@ -31,6 +31,16 @@ function normalizeFinalDeltaText({ rawDeltaText, finalContent }) {
   return finalContent;
 }
 
+async function defaultExecuteToolCall(call, { workspaceRoot, onCommandApproval }) {
+  return executeFileToolCall(call, {
+    workspaceRoot,
+    confirmCommand:
+      call?.name === "run_command" && typeof onCommandApproval === "function"
+        ? onCommandApproval
+        : undefined,
+  });
+}
+
 export function extractAgentDirective(responseText) {
   const text = responseText?.trim() ?? "";
   if (!text) {
@@ -56,15 +66,15 @@ export function extractAgentDirective(responseText) {
   return { type: "final", content: text };
 }
 
-function buildAgentBootstrapPrompt({ task, workspaceRoot, workspaceMemory }) {
-  const toolDescriptions = formatToolDefinitionsForPrompt();
+function buildAgentBootstrapPrompt({ task, workspaceRoot, workspaceMemory, toolDescriptions }) {
+  const resolvedToolDescriptions = toolDescriptions || formatToolDefinitionsForPrompt();
   return [
     "You are Meta Code Agent running in tool mode.",
     `Workspace root: ${workspaceRoot}`,
-    "You can solve tasks by calling one file tool at a time.",
+    "You can solve tasks by calling one tool at a time.",
     "",
     "Available tools:",
-    toolDescriptions,
+    resolvedToolDescriptions,
     "",
     ...(workspaceMemory?.text
       ? [
@@ -220,9 +230,15 @@ function buildContinueExecutionPrompt({ previousFinal, missingFiles = [] }) {
   ].join("\n");
 }
 
-function buildRefusalReseedPrompt({ task, workspaceRoot, workspaceMemory, previousFinal }) {
+function buildRefusalReseedPrompt({
+  task,
+  workspaceRoot,
+  workspaceMemory,
+  previousFinal,
+  toolDescriptions,
+}) {
   return [
-    buildAgentBootstrapPrompt({ task, workspaceRoot, workspaceMemory }),
+    buildAgentBootstrapPrompt({ task, workspaceRoot, workspaceMemory, toolDescriptions }),
     "",
     "RECOVERY_RESEED",
     "A previous attempt returned an unhelpful refusal.",
@@ -265,12 +281,19 @@ export async function runAgentWithFileTools({
   onCommandApproval,
   onFollowUpQuestion,
   onDelta,
+  toolDescriptions,
+  executeToolCall = defaultExecuteToolCall,
 }) {
   const workspaceMemory = await loadWorkspaceMemory(workspaceRoot);
   let nextConversationId = conversationId;
   let nextBranchPath = currentBranchPath;
   let nextMode = mode;
-  let turnPrompt = buildAgentBootstrapPrompt({ task, workspaceRoot, workspaceMemory });
+  let turnPrompt = buildAgentBootstrapPrompt({
+    task,
+    workspaceRoot,
+    workspaceMemory,
+    toolDescriptions,
+  });
   let lastToolCallSignature = "";
   let repeatToolCallCount = 0;
   let toolCallsExecuted = 0;
@@ -346,6 +369,7 @@ export async function runAgentWithFileTools({
               task,
               workspaceRoot,
               workspaceMemory,
+              toolDescriptions,
               previousFinal: directive.content,
             });
             continue;
@@ -472,12 +496,9 @@ export async function runAgentWithFileTools({
       onThinking?.(directive.thought);
     }
     await onToolCall?.(directive);
-    const toolOutcome = await executeFileToolCall(directive, {
+    const toolOutcome = await executeToolCall(directive, {
       workspaceRoot,
-      confirmCommand:
-        directive.name === "run_command" && typeof onCommandApproval === "function"
-          ? onCommandApproval
-          : undefined,
+      onCommandApproval,
     });
     toolCallsExecuted += 1;
     if (toolOutcome.ok) {

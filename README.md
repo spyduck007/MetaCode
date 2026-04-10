@@ -16,6 +16,7 @@ Meta Code is an unofficial Meta AI terminal coding client with:
 - **Agent/plain-chat toggle** — switch between agent mode (file tools) and plain chat
 - Workspace memory files for persistent project instructions
 - **Network auto-retry** — transparently retries on transient network/server errors (5xx, ECONNRESET, etc.)
+- **MCP server integration** — add external tools via stdio, HTTP, or SSE-style message endpoints
 
 > [!WARNING]
 > Meta Code is in **early production**. Expect bugs and rough edges.
@@ -93,8 +94,9 @@ If the agent gets genuinely blocked, it may ask a single follow-up clarification
 - `/mode <value>` — set mode directly
 - `/max-steps [count|status]` — tune autonomous step budget for this TUI session
 - `/yolo [on|off|status]` — auto-approve terminal command tool requests
+- `/mcp [status|test <name>|enable <name>|disable <name>|trust <name> <on|off>|remove <name>]` — inspect and manage MCP server state
 - `/diff` — show files touched by the last agent run
-- `/tools` — show available file tools for agent mode
+- `/tools` — show available agent tools (built-in + discovered MCP)
 
 ### Sessions
 
@@ -142,6 +144,29 @@ meta-code config show
 meta-code config set-mode think_hard
 meta-code config set-max-steps 40
 ```
+
+## MCP commands
+
+Configure external MCP servers and discover their tools:
+
+```bash
+meta-code mcp list
+meta-code mcp add-stdio docs npx -y @upstash/context7-mcp --trust
+meta-code mcp add-http internal-docs https://example.com/mcp --header X_API_KEY=abc123
+meta-code mcp add-sse remote-sse https://example.com/sse --message-url https://example.com/messages
+meta-code mcp test docs
+meta-code mcp tools
+meta-code mcp disable docs
+meta-code mcp enable docs
+meta-code mcp trust docs off
+meta-code mcp remove docs
+```
+
+Notes:
+
+- `add-stdio` supports `--env KEY=VALUE` entries.
+- `add-http` / `add-sse` support `--header KEY=VALUE` and `--bearer-env ENV_VAR`.
+- Untrusted MCP servers require approval for each tool call unless `trust` is enabled.
 
 ## Workspace memory (persistent instructions)
 
@@ -194,6 +219,13 @@ The built-in agent can call these workspace-scoped tools:
 | `patch_file` | Apply a unified-diff patch string to a file |
 | `stat_path` | Get file/directory metadata |
 | `run_command` | Run a shell command (requires approval unless yolo) |
+
+When MCP servers are enabled, their discovered tools are automatically merged into the same tool catalog (prefixed as `mcp.<server>.<tool>`), and can be listed via:
+
+```bash
+meta-code mcp tools
+meta-code tools list
+```
 
 CLI command:
 

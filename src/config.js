@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { APP_DIR_NAME, DEFAULT_MODE, LEGACY_APP_DIR_NAME } from "./constants.js";
 import { DEFAULT_AGENT_STEPS } from "./max-steps.js";
+import { normalizeMcpServers } from "./mcp-config.js";
 
 function resolveDefaultBaseDir() {
   const home = os.homedir();
@@ -60,6 +61,7 @@ export async function readConfig(baseDir) {
     defaultMaxSteps: Number.isInteger(loaded.defaultMaxSteps)
       ? loaded.defaultMaxSteps
       : DEFAULT_AGENT_STEPS,
+    mcpServers: normalizeMcpServers(loaded.mcpServers),
   };
 }
 
@@ -72,6 +74,7 @@ export async function writeConfig(config, baseDir) {
       ? { defaultMaxSteps: config.defaultMaxSteps }
       : {}),
     ...(config.cookie ? { cookie: config.cookie } : {}),
+    mcpServers: normalizeMcpServers(config.mcpServers),
   };
   await writeJsonFile(configPath, normalized);
   return normalized;

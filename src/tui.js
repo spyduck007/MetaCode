@@ -8,6 +8,7 @@ import {
   parseSlashCommand,
 } from "./slash-commands.js";
 import { formatToolDefinitionsForPrompt } from "./file-tools.js";
+import { formatMcpToolDefinitionsForPrompt } from "./mcp-manager.js";
 import {
   SPINNER_FRAMES,
   describeAgentStatusFriendly,
@@ -15,6 +16,7 @@ import {
   pickThinkingPhrase,
 } from "./progress-ui.js";
 import { loadWorkspaceMemory, WORKSPACE_MEMORY_FILES } from "./workspace-memory.js";
+import { normalizeMcpServerName, summarizeMcpServer } from "./mcp-config.js";
 import {
   DEFAULT_AGENT_STEPS,
   normalizeAgentSteps,
@@ -601,6 +603,13 @@ export async function startTui({
   login,
   logout,
   setCookie,
+  getConfig,
+  listMcpServers,
+  setMcpServerEnabled,
+  setMcpServerTrust,
+  removeMcpServer,
+  testMcpServer,
+  discoverMcpTools,
   initialSystemMessage = null,
   defaultMaxSteps = DEFAULT_AGENT_STEPS,
   runAgentTask,
@@ -999,10 +1008,23 @@ export async function startTui({
 
     if (command.name === "doctor") {
       currentAuth = await getAuthSummary();
+      const config =
+        typeof getConfig === "function"
+          ? await getConfig()
+          : { defaultMode: currentSession.mode, defaultMaxSteps: currentMaxSteps, mcpServers: {} };
+      const mcpSummary =
+        typeof discoverMcpTools === "function"
+          ? await discoverMcpTools()
+          : { tools: [], errors: [] };
       const report = await runDoctor({
         cwd: process.cwd(),
         authSummary: currentAuth,
-        config: { defaultMode: currentSession.mode, defaultMaxSteps: currentMaxSteps },
+        config: {
+          ...config,
+          defaultMode: config.defaultMode ?? currentSession.mode,
+          defaultMaxSteps: config.defaultMaxSteps ?? currentMaxSteps,
+        },
+        mcpSummary,
       });
       await showInfoModal(screen, "Doctor", formatDoctorLines(report));
       return false;
@@ -1096,7 +1118,153 @@ export async function startTui({
     }
 
     if (command.name === "tools") {
-      await showInfoModal(screen, "Agent File Tools", formatToolDefinitionsForPrompt().split("\n"));
+      const mcpSummary =
+        typeof discoverMcpTools === "function"
+          ? await discoverMcpTools()
+          : { tools: [], errors: [] };
+      const lines = [
+        ...formatToolDefinitionsForPrompt(mcpSummary.tools).split("\n"),
+        "",
+        ...(mcpSummary.errors.length > 0
+          ? [
+              "MCP discovery errors:",
+              ...mcpSummary.errors.map((entry) => `- ${entry.server}: ${entry.error}`),
+            ]
+          : []),
+      ];
+      await showInfoModal(screen, "Agent Tools", lines);
+      return false;
+    }
+
+    if (command.name === "mcp") {
+      if (typeof listMcpServers !== "function") {
+        pushMessage("error", "MCP management is unavailable in this build.");
+        return false;
+      }
+
+      const action = (command.args[0] || "status").toLowerCase();
+      if (["status", "list"].includes(action)) {
+        const [servers, mcpSummary] = await Promise.all([
+          listMcpServers(),
+          typeof discoverMcpTools === "function"
+            ? discoverMcpTools()
+            : Promise.resolve({ tools: [], errors: [] }),
+        ]);
+        const names = Object.keys(servers).sort((a, b) => a.localeCompare(b));
+        const lines = [
+          ...(names.length > 0
+            ? names.map((name) => summarizeMcpServer(servers[name]))
+            : ["No MCP servers configured."]),
+          "",
+          `Discovered MCP tools: ${mcpSummary.tools.length}`,
+          ...(mcpSummary.tools.length > 0
+            ? mcpSummary.tools.slice(0, 20).map((tool) => `- ${tool.name}`)
+            : []),
+          ...(mcpSummary.tools.length > 20
+            ? [`...and ${mcpSummary.tools.length - 20} more tool(s)`]
+            : []),
+          ...(mcpSummary.errors.length > 0
+            ? [
+                "",
+                "Discovery errors:",
+                ...mcpSummary.errors.map((entry) => `- ${entry.server}: ${entry.error}`),
+              ]
+            : []),
+          "",
+          "Usage: /mcp [status|test <name>|enable <name>|disable <name>|trust <name> <on|off>|remove <name>]",
+        ];
+        await showInfoModal(screen, "MCP", lines);
+        return false;
+      }
+
+      if (action === "test") {
+        const target = command.args[1];
+        if (!target) {
+          pushMessage("error", "Usage: /mcp test <name>");
+          return false;
+        }
+        if (typeof testMcpServer !== "function") {
+          pushMessage("error", "MCP testing is unavailable in this build.");
+          return false;
+        }
+        try {
+          const result = await testMcpServer(target);
+          const lines = [
+            `Server: ${result.server}`,
+            `Type: ${result.type}`,
+            `Tools discovered: ${result.toolCount}`,
+            "",
+            ...(result.tools.length > 0 ? result.tools.map((tool) => `- ${tool}`) : ["No tools found."]),
+          ];
+          await showInfoModal(screen, `MCP Test — ${result.server}`, lines);
+        } catch (error) {
+          pushMessage("error", `MCP test failed: ${error.message}`);
+        }
+        return false;
+      }
+
+      if (action === "enable" || action === "disable") {
+        const target = command.args[1];
+        if (!target) {
+          pushMessage("error", `Usage: /mcp ${action} <name>`);
+          return false;
+        }
+        if (typeof setMcpServerEnabled !== "function") {
+          pushMessage("error", "MCP enable/disable is unavailable in this build.");
+          return false;
+        }
+        try {
+          await setMcpServerEnabled(normalizeMcpServerName(target), action === "enable");
+          pushMessage("system", `MCP server "${target}" ${action}d.`);
+        } catch (error) {
+          pushMessage("error", `MCP update failed: ${error.message}`);
+        }
+        return false;
+      }
+
+      if (action === "trust") {
+        const target = command.args[1];
+        const mode = (command.args[2] || "").toLowerCase();
+        if (!target || !["on", "off"].includes(mode)) {
+          pushMessage("error", "Usage: /mcp trust <name> <on|off>");
+          return false;
+        }
+        if (typeof setMcpServerTrust !== "function") {
+          pushMessage("error", "MCP trust updates are unavailable in this build.");
+          return false;
+        }
+        try {
+          await setMcpServerTrust(normalizeMcpServerName(target), mode === "on");
+          pushMessage("system", `MCP trust for "${target}" set to ${mode}.`);
+        } catch (error) {
+          pushMessage("error", `MCP update failed: ${error.message}`);
+        }
+        return false;
+      }
+
+      if (action === "remove") {
+        const target = command.args[1];
+        if (!target) {
+          pushMessage("error", "Usage: /mcp remove <name>");
+          return false;
+        }
+        if (typeof removeMcpServer !== "function") {
+          pushMessage("error", "MCP removal is unavailable in this build.");
+          return false;
+        }
+        try {
+          await removeMcpServer(normalizeMcpServerName(target));
+          pushMessage("system", `MCP server "${target}" removed.`);
+        } catch (error) {
+          pushMessage("error", `MCP remove failed: ${error.message}`);
+        }
+        return false;
+      }
+
+      pushMessage(
+        "error",
+        "Usage: /mcp [status|test <name>|enable <name>|disable <name>|trust <name> <on|off>|remove <name>]"
+      );
       return false;
     }
 

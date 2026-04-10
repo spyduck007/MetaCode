@@ -69,6 +69,9 @@ export function describeToolCallFriendly(call) {
     case "run_command":
       return command ? `running "${command}"` : "running a terminal command";
     default:
+      if (name.startsWith("mcp.")) {
+        return `calling ${name}`;
+      }
       return "using a file tool";
   }
 }

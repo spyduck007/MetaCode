@@ -32,3 +32,46 @@ test("writeConfig and updateConfig persist defaultMaxSteps", async () => {
     await rm(baseDir, { recursive: true, force: true });
   }
 });
+
+test("writeConfig and updateConfig persist normalized mcpServers", async () => {
+  const baseDir = await mkdtemp(path.join(os.tmpdir(), "meta-config-test-"));
+  try {
+    await writeConfig(
+      {
+        defaultMode: "think_fast",
+        defaultMaxSteps: 24,
+        mcpServers: {
+          docs: {
+            type: "http",
+            url: "https://example.com/mcp",
+            enabled: true,
+            trust: true,
+            allowTools: "lookup,search",
+          },
+        },
+      },
+      baseDir
+    );
+
+    let config = await readConfig(baseDir);
+    assert.ok(config.mcpServers.docs, "docs MCP server should exist");
+    assert.equal(config.mcpServers.docs.type, "http");
+    assert.equal(config.mcpServers.docs.url, "https://example.com/mcp");
+    assert.equal(config.mcpServers.docs.trust, true);
+    assert.deepEqual(config.mcpServers.docs.allowTools, ["lookup", "search"]);
+
+    await updateConfig(
+      {
+        mcpServers: {
+          ...config.mcpServers,
+          docs: { ...config.mcpServers.docs, enabled: false },
+        },
+      },
+      baseDir
+    );
+    config = await readConfig(baseDir);
+    assert.equal(config.mcpServers.docs.enabled, false);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});

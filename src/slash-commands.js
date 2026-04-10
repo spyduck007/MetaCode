@@ -37,7 +37,12 @@ export const SLASH_COMMAND_DEFINITIONS = [
   {
     name: "tools",
     usage: "/tools",
-    description: "Show available built-in file tools for agent mode.",
+    description: "Show available agent tools (built-in + discovered MCP).",
+  },
+  {
+    name: "mcp",
+    usage: "/mcp [status|test <name>|enable <name>|disable <name>|trust <name> <on|off>|remove <name>]",
+    description: "Inspect and manage MCP server status from the TUI.",
   },
   {
     name: "memory",

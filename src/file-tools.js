@@ -667,10 +667,15 @@ export const FILE_TOOL_DEFINITIONS = [
   },
 ];
 
-export function formatToolDefinitionsForPrompt() {
-  return FILE_TOOL_DEFINITIONS.map(
+export function formatToolDefinitionsForPrompt(extraToolDefinitions = []) {
+  const combined = [...FILE_TOOL_DEFINITIONS, ...(Array.isArray(extraToolDefinitions) ? extraToolDefinitions : [])];
+  return combined.map(
     (tool) => `- ${tool.name}: ${tool.description} Args: ${tool.args.join(", ")}`
   ).join("\n");
+}
+
+export function isBuiltInFileToolName(name) {
+  return Boolean(name && TOOL_HANDLERS[name]);
 }
 
 export async function executeFileToolCall(

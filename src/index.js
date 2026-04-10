@@ -23,7 +23,12 @@ import {
 } from "./sessions.js";
 import { startTui } from "./tui.js";
 import { runAgentWithFileTools } from "./agent-orchestrator.js";
-import { FILE_TOOL_DEFINITIONS } from "./file-tools.js";
+import {
+  FILE_TOOL_DEFINITIONS,
+  executeFileToolCall,
+  formatToolDefinitionsForPrompt,
+  isBuiltInFileToolName,
+} from "./file-tools.js";
 import {
   describeAgentStatusFriendly,
   describeToolCallFriendly,
@@ -37,6 +42,15 @@ import {
   normalizeAgentSteps,
 } from "./max-steps.js";
 import { runDoctor } from "./doctor.js";
+import { formatMcpToolDefinitionsForPrompt, MCPManager } from "./mcp-manager.js";
+import {
+  normalizeMcpServerConfig,
+  normalizeMcpServerName,
+  parseKeyValueEntries,
+  removeMcpServerConfig,
+  summarizeMcpServer,
+  upsertMcpServerConfig,
+} from "./mcp-config.js";
 
 function toAuthSummary(auth) {
   return {
@@ -124,11 +138,111 @@ async function buildRuntime(
   };
 }
 
+function buildToolDefinitionsForAgent(mcpTools = []) {
+  if (!mcpTools.length) {
+    return formatToolDefinitionsForPrompt();
+  }
+  return [formatToolDefinitionsForPrompt(), formatMcpToolDefinitionsForPrompt(mcpTools)]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function formatMcpApprovalCommand({ serverName, toolName, args }) {
+  const serializedArgs = JSON.stringify(args ?? {});
+  return `mcp ${serverName}.${toolName} ${serializedArgs.length > 240 ? `${serializedArgs.slice(0, 240)}...` : serializedArgs}`;
+}
+
+async function buildMcpRuntime({ workspaceRoot }) {
+  const config = await readConfig();
+  const manager = new MCPManager({
+    workspaceRoot,
+    mcpServers: config.mcpServers,
+  });
+  const discovery = await manager.discoverTools();
+  return {
+    manager,
+    tools: discovery.tools,
+    errors: discovery.errors,
+  };
+}
+
+function createInteractiveMcpController({ workspaceRoot }) {
+  let manager = null;
+  let cachedDiscovery = null;
+  let discoveryPromise = null;
+
+  async function closeManager() {
+    const activeManager = manager;
+    manager = null;
+    cachedDiscovery = null;
+    if (!activeManager) return;
+    await activeManager.close();
+  }
+
+  async function ensureManager() {
+    if (manager) return manager;
+    const config = await readConfig();
+    manager = new MCPManager({
+      workspaceRoot,
+      mcpServers: config.mcpServers,
+    });
+    return manager;
+  }
+
+  async function discover({ refresh = false } = {}) {
+    if (refresh) {
+      if (discoveryPromise) {
+        await discoveryPromise.catch(() => {});
+      }
+      await closeManager();
+    } else {
+      if (cachedDiscovery) return cachedDiscovery;
+      if (discoveryPromise) return discoveryPromise;
+    }
+
+    discoveryPromise = (async () => {
+      const activeManager = await ensureManager();
+      const result = await activeManager.discoverTools();
+      cachedDiscovery = {
+        tools: result.tools,
+        errors: result.errors,
+      };
+      return cachedDiscovery;
+    })();
+
+    try {
+      return await discoveryPromise;
+    } finally {
+      discoveryPromise = null;
+    }
+  }
+
+  return {
+    discover,
+    prewarm: () => discover({ refresh: true }),
+    testServer: async (name) => {
+      const activeManager = await ensureManager();
+      return activeManager.testServer(name);
+    },
+    getRuntimeSnapshot: async () => {
+      const discovery = await discover();
+      const activeManager = await ensureManager();
+      return {
+        manager: activeManager,
+        tools: discovery.tools,
+        errors: discovery.errors,
+      };
+    },
+    close: closeManager,
+  };
+}
+
 async function runAgentTask({
   client,
   task,
   session,
   workspaceRoot = process.cwd(),
+  mcpRuntime = null,
   maxSteps,
   onStatus,
   onThinking,
@@ -141,22 +255,58 @@ async function runAgentTask({
   if (!client) {
     throw new Error("No active auth session. Run /login first.");
   }
-  return runAgentWithFileTools({
-    client,
-    task,
-    conversationId: session.conversationId,
-    currentBranchPath: session.currentBranchPath,
-    mode: session.mode,
-    workspaceRoot,
-    maxSteps,
-    onStatus,
-    onThinking,
-    onToolCall,
-    onToolResult,
-    onCommandApproval,
-    onFollowUpQuestion,
-    onDelta,
-  });
+  const runtime = mcpRuntime ?? (await buildMcpRuntime({ workspaceRoot }));
+  const toolDescriptions = buildToolDefinitionsForAgent(runtime.tools);
+  if (runtime.errors.length > 0 && typeof onStatus === "function") {
+    onStatus("mcp degraded");
+  }
+
+  try {
+    return await runAgentWithFileTools({
+      client,
+      task,
+      conversationId: session.conversationId,
+      currentBranchPath: session.currentBranchPath,
+      mode: session.mode,
+      workspaceRoot,
+      maxSteps,
+      onStatus,
+      onThinking,
+      onToolCall,
+      onToolResult,
+      onCommandApproval,
+      onFollowUpQuestion,
+      onDelta,
+      toolDescriptions,
+      executeToolCall: async (call, context) => {
+        if (isBuiltInFileToolName(call?.name)) {
+          return executeFileToolCall(call, {
+            workspaceRoot: context.workspaceRoot,
+            confirmCommand:
+              call?.name === "run_command" && typeof context.onCommandApproval === "function"
+                ? context.onCommandApproval
+                : undefined,
+          });
+        }
+
+        return runtime.manager.executeToolCall(call, {
+          onApproval:
+            typeof context.onCommandApproval === "function"
+              ? ({ serverName, toolName, arguments: args, timeoutMs }) =>
+                  context.onCommandApproval({
+                    command: formatMcpApprovalCommand({ serverName, toolName, args }),
+                    cwd: "mcp",
+                    timeoutMs,
+                  })
+              : undefined,
+        });
+      },
+    });
+  } finally {
+    if (!mcpRuntime) {
+      await runtime.manager.close();
+    }
+  }
 }
 
 async function deleteSessionEverywhere(name, { clientOverride } = {}) {
@@ -215,6 +365,54 @@ async function cleanupUnusedLaunchSession({ sessionName, chattedSessions }) {
   }
 
   await writeSessionState(state);
+}
+
+async function listMcpServersFromConfig() {
+  const config = await readConfig();
+  return config.mcpServers ?? {};
+}
+
+async function saveMcpServersToConfig(nextServers) {
+  await updateConfig({ mcpServers: nextServers });
+  const config = await readConfig();
+  return config.mcpServers ?? {};
+}
+
+async function upsertMcpServer(name, partialConfig) {
+  const config = await readConfig();
+  const nextServers = upsertMcpServerConfig(config.mcpServers, name, partialConfig);
+  return saveMcpServersToConfig(nextServers);
+}
+
+async function removeMcpServer(name) {
+  const config = await readConfig();
+  const nextServers = removeMcpServerConfig(config.mcpServers, name);
+  return saveMcpServersToConfig(nextServers);
+}
+
+async function testMcpServer(name, { workspaceRoot = process.cwd() } = {}) {
+  const config = await readConfig();
+  const manager = new MCPManager({
+    workspaceRoot,
+    mcpServers: config.mcpServers,
+  });
+  try {
+    return await manager.testServer(name);
+  } finally {
+    await manager.close();
+  }
+}
+
+async function discoverMcpTools({ workspaceRoot = process.cwd() } = {}) {
+  const runtime = await buildMcpRuntime({ workspaceRoot });
+  try {
+    return {
+      tools: runtime.tools,
+      errors: runtime.errors,
+    };
+  } finally {
+    await runtime.manager.close();
+  }
 }
 
 async function promptCommandApproval({ command, cwd, timeoutMs, yoloState, progress }) {
@@ -332,50 +530,86 @@ program
           requireClient: false,
           freshSessionOnLaunch: true,
         });
-        const tuiResult = await startTui({
-          client: runtime.client,
-          sessionName: runtime.sessionName,
-          session: runtime.session,
-          saveSession: (name, patch) => updateSession(name, patch),
-          loadSession: async (name) => (await ensureSession(name)).session,
-          listSessions: () => listSessions(),
-          deleteSessionState: (name, { client } = {}) =>
-            deleteSessionEverywhere(name, { clientOverride: client }),
-          createSessionName: () => generateSessionName("chat"),
-          resetSessionState: (name) => resetSession(name),
-          getAuthSummary: async () => (await resolveAuthState({ requireClient: false })).authSummary,
-          login: async (onStatus) => runBrowserLogin({ onStatus }),
-          logout: async () => clearConfigCookie(),
-          setCookie: async (cookie) => setConfigCookie(cookie),
-          initialSystemMessage: runtime.launchedFreshSession
-            ? `Started a fresh session "${runtime.sessionName}" for this launch.`
-            : null,
-          defaultMaxSteps: runtime.maxSteps,
-          runAgentTask: async ({
-            client,
-            task,
-            session,
-            maxSteps,
-            onStatus,
-            onThinking,
-            onToolCall,
-            onToolResult,
-            onCommandApproval,
-            onFollowUpQuestion,
-          }) =>
-            runAgentTask({
-              client: client ?? runtime.client,
+        const workspaceRoot = process.cwd();
+        const interactiveMcp = createInteractiveMcpController({ workspaceRoot });
+        void interactiveMcp.prewarm().catch(() => {});
+
+        const refreshInteractiveMcp = () => {
+          void interactiveMcp.discover({ refresh: true }).catch(() => {});
+        };
+
+        let tuiResult;
+        try {
+          tuiResult = await startTui({
+            client: runtime.client,
+            sessionName: runtime.sessionName,
+            session: runtime.session,
+            saveSession: (name, patch) => updateSession(name, patch),
+            loadSession: async (name) => (await ensureSession(name)).session,
+            listSessions: () => listSessions(),
+            deleteSessionState: (name, { client } = {}) =>
+              deleteSessionEverywhere(name, { clientOverride: client }),
+            createSessionName: () => generateSessionName("chat"),
+            resetSessionState: (name) => resetSession(name),
+            getAuthSummary: async () => (await resolveAuthState({ requireClient: false })).authSummary,
+            login: async (onStatus) => runBrowserLogin({ onStatus }),
+            logout: async () => clearConfigCookie(),
+            setCookie: async (cookie) => setConfigCookie(cookie),
+            getConfig: async () => readConfig(),
+            listMcpServers: async () => listMcpServersFromConfig(),
+            setMcpServerEnabled: async (name, enabled) => {
+              const updated = await upsertMcpServer(name, { enabled: Boolean(enabled) });
+              refreshInteractiveMcp();
+              return updated;
+            },
+            setMcpServerTrust: async (name, trust) => {
+              const updated = await upsertMcpServer(name, { trust: Boolean(trust) });
+              refreshInteractiveMcp();
+              return updated;
+            },
+            removeMcpServer: async (name) => {
+              const updated = await removeMcpServer(name);
+              refreshInteractiveMcp();
+              return updated;
+            },
+            testMcpServer: async (name) => interactiveMcp.testServer(name),
+            discoverMcpTools: async () => interactiveMcp.discover(),
+            initialSystemMessage: runtime.launchedFreshSession
+              ? `Started a fresh session "${runtime.sessionName}" for this launch.`
+              : null,
+            defaultMaxSteps: runtime.maxSteps,
+            runAgentTask: async ({
+              client,
               task,
               session,
-              maxSteps: maxSteps ?? runtime.maxSteps,
+              maxSteps,
               onStatus,
               onThinking,
               onToolCall,
               onToolResult,
               onCommandApproval,
               onFollowUpQuestion,
-            }),
-        });
+            }) => {
+              const mcpRuntime = await interactiveMcp.getRuntimeSnapshot();
+              return runAgentTask({
+                client: client ?? runtime.client,
+                task,
+                session,
+                workspaceRoot,
+                mcpRuntime,
+                maxSteps: maxSteps ?? runtime.maxSteps,
+                onStatus,
+                onThinking,
+                onToolCall,
+                onToolResult,
+                onCommandApproval,
+                onFollowUpQuestion,
+              });
+            },
+          });
+        } finally {
+          await interactiveMcp.close();
+        }
         if (runtime.launchedFreshSession) {
           await cleanupUnusedLaunchSession({
             sessionName: runtime.sessionName,
@@ -720,39 +954,305 @@ sessionsCommand
     }
   });
 
-const toolsCommand = program.command("tools").description("Inspect built-in tool-enabled agent file tools");
+const toolsCommand = program.command("tools").description("Inspect available agent tools");
 toolsCommand
   .command("list")
   .description("List available file tools")
-  .action(() => {
+  .action(async () => {
     FILE_TOOL_DEFINITIONS.forEach((tool) => {
       console.log(`${tool.name}(${tool.args.join(", ")})`);
       console.log(`  ${tool.description}`);
     });
+
+    const mcpSummary = await discoverMcpTools({ workspaceRoot: process.cwd() });
+    if (mcpSummary.tools.length > 0) {
+      console.log("");
+      console.log(chalk.bold("MCP tools"));
+      mcpSummary.tools
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .forEach((tool) => {
+          console.log(`${tool.name}(${tool.args.join(", ")})`);
+          console.log(`  ${tool.description}`);
+        });
+    }
+    if (mcpSummary.errors.length > 0) {
+      console.log("");
+      console.log(chalk.yellow("MCP discovery errors:"));
+      mcpSummary.errors.forEach((entry) => {
+        console.log(`- ${entry.server}: ${entry.error}`);
+      });
+    }
   });
 
 toolsCommand
   .command("describe")
   .description("Show detailed help for a specific file tool")
   .argument("<name>", "Tool name (e.g. edit_file, glob_files)")
-  .action((name) => {
+  .action(async (name) => {
     const tool = FILE_TOOL_DEFINITIONS.find((t) => t.name === name);
-    if (!tool) {
-      const allNames = FILE_TOOL_DEFINITIONS.map((t) => t.name).join(", ");
-      console.error(chalk.red(`Unknown tool "${name}". Available tools: ${allNames}`));
-      process.exitCode = 1;
+    if (tool) {
+      console.log(chalk.bold(`${tool.name}(${tool.args.join(", ")})`));
+      console.log(`${tool.description}`);
+      if (tool.details) {
+        console.log("");
+        console.log(tool.details);
+      }
+      if (tool.example) {
+        console.log("");
+        console.log(chalk.dim("Example:"));
+        console.log(`  ${tool.example}`);
+      }
       return;
     }
-    console.log(chalk.bold(`${tool.name}(${tool.args.join(", ")})`));
-    console.log(`${tool.description}`);
-    if (tool.details) {
+
+    const mcpSummary = await discoverMcpTools({ workspaceRoot: process.cwd() });
+    const mcpTool = mcpSummary.tools.find((entry) => entry.name === name);
+    if (mcpTool) {
+      console.log(chalk.bold(`${mcpTool.name}(${mcpTool.args.join(", ")})`));
+      console.log(`${mcpTool.description}`);
       console.log("");
-      console.log(tool.details);
+      console.log(
+        chalk.dim(
+          `MCP source: server=${mcpTool.serverName}, tool=${mcpTool.toolName}. Configure with 'meta-code mcp ...'.`
+        )
+      );
+      return;
     }
-    if (tool.example) {
+
+    const allNames = [...FILE_TOOL_DEFINITIONS.map((t) => t.name), ...mcpSummary.tools.map((t) => t.name)];
+    console.error(chalk.red(`Unknown tool "${name}". Available tools: ${allNames.join(", ")}`));
+    process.exitCode = 1;
+  });
+
+const mcpCommand = program.command("mcp").description("Manage MCP servers and discovered MCP tools");
+
+mcpCommand
+  .command("list")
+  .description("List configured MCP servers")
+  .action(async () => {
+    const servers = await listMcpServersFromConfig();
+    const names = Object.keys(servers).sort((a, b) => a.localeCompare(b));
+    if (names.length === 0) {
+      console.log(chalk.yellow("No MCP servers configured."));
+      return;
+    }
+    for (const name of names) {
+      console.log(summarizeMcpServer(servers[name]));
+    }
+  });
+
+mcpCommand
+  .command("add-stdio")
+  .allowUnknownOption(true)
+  .description("Add or update a stdio MCP server")
+  .argument("<name>", "Server name")
+  .argument("<command>", "Executable command")
+  .argument("[args...]", "Command arguments")
+  .option("--cwd <path>", "Working directory (default: current workspace)")
+  .option("--env <entry...>", "Environment variable entry KEY=VALUE")
+  .option("--allow-tools <csv>", "Comma-separated allowlist of tool names")
+  .option("--deny-tools <csv>", "Comma-separated denylist of tool names")
+  .option("--startup-timeout <ms>", "Startup timeout in milliseconds")
+  .option("--tool-timeout <ms>", "Tool call timeout in milliseconds")
+  .option("--disable", "Create server in disabled state", false)
+  .option("--trust", "Trust server and skip per-call approval prompts", false)
+  .action(async (name, commandName, args = [], options) => {
+    const envEntries = Array.isArray(options.env)
+      ? options.env
+      : options.env
+        ? [options.env]
+        : [];
+    const env = parseKeyValueEntries(envEntries);
+    const server = normalizeMcpServerConfig(name, {
+      type: "stdio",
+      command: commandName,
+      args,
+      cwd: options.cwd,
+      env,
+      allowTools: options.allowTools,
+      denyTools: options.denyTools,
+      enabled: !options.disable,
+      trust: options.trust,
+      startupTimeoutMs: options.startupTimeout,
+      toolTimeoutMs: options.toolTimeout,
+    });
+    await upsertMcpServer(server.name, server);
+    console.log(chalk.green(`Saved MCP server "${server.name}".`));
+  });
+
+mcpCommand
+  .command("add-http")
+  .description("Add or update an HTTP MCP server")
+  .argument("<name>", "Server name")
+  .argument("<url>", "HTTP endpoint URL")
+  .option("--header <entry...>", "Header entry KEY=VALUE")
+  .option("--bearer-env <name>", "Environment variable containing bearer token")
+  .option("--allow-tools <csv>", "Comma-separated allowlist of tool names")
+  .option("--deny-tools <csv>", "Comma-separated denylist of tool names")
+  .option("--startup-timeout <ms>", "Startup timeout in milliseconds")
+  .option("--tool-timeout <ms>", "Tool call timeout in milliseconds")
+  .option("--disable", "Create server in disabled state", false)
+  .option("--trust", "Trust server and skip per-call approval prompts", false)
+  .action(async (name, url, options) => {
+    const headerEntries = Array.isArray(options.header)
+      ? options.header
+      : options.header
+        ? [options.header]
+        : [];
+    const headers = parseKeyValueEntries(headerEntries);
+    const server = normalizeMcpServerConfig(name, {
+      type: "http",
+      url,
+      headers,
+      bearerTokenEnvVar: options.bearerEnv,
+      allowTools: options.allowTools,
+      denyTools: options.denyTools,
+      enabled: !options.disable,
+      trust: options.trust,
+      startupTimeoutMs: options.startupTimeout,
+      toolTimeoutMs: options.toolTimeout,
+    });
+    await upsertMcpServer(server.name, server);
+    console.log(chalk.green(`Saved MCP server "${server.name}".`));
+  });
+
+mcpCommand
+  .command("add-sse")
+  .description("Add or update an SSE MCP server")
+  .argument("<name>", "Server name")
+  .argument("<url>", "SSE endpoint URL")
+  .option("--message-url <url>", "Optional message POST endpoint URL")
+  .option("--header <entry...>", "Header entry KEY=VALUE")
+  .option("--bearer-env <name>", "Environment variable containing bearer token")
+  .option("--allow-tools <csv>", "Comma-separated allowlist of tool names")
+  .option("--deny-tools <csv>", "Comma-separated denylist of tool names")
+  .option("--startup-timeout <ms>", "Startup timeout in milliseconds")
+  .option("--tool-timeout <ms>", "Tool call timeout in milliseconds")
+  .option("--disable", "Create server in disabled state", false)
+  .option("--trust", "Trust server and skip per-call approval prompts", false)
+  .action(async (name, url, options) => {
+    const headerEntries = Array.isArray(options.header)
+      ? options.header
+      : options.header
+        ? [options.header]
+        : [];
+    const headers = parseKeyValueEntries(headerEntries);
+    const server = normalizeMcpServerConfig(name, {
+      type: "sse",
+      url,
+      messageUrl: options.messageUrl,
+      headers,
+      bearerTokenEnvVar: options.bearerEnv,
+      allowTools: options.allowTools,
+      denyTools: options.denyTools,
+      enabled: !options.disable,
+      trust: options.trust,
+      startupTimeoutMs: options.startupTimeout,
+      toolTimeoutMs: options.toolTimeout,
+    });
+    await upsertMcpServer(server.name, server);
+    console.log(chalk.green(`Saved MCP server "${server.name}".`));
+  });
+
+mcpCommand
+  .command("remove")
+  .description("Remove an MCP server from config")
+  .argument("<name>", "Server name")
+  .action(async (name) => {
+    const normalizedName = normalizeMcpServerName(name);
+    const servers = await listMcpServersFromConfig();
+    if (!servers[normalizedName]) {
+      console.log(chalk.yellow(`MCP server "${normalizedName}" was not found.`));
+      return;
+    }
+    await removeMcpServer(normalizedName);
+    console.log(chalk.green(`Removed MCP server "${normalizedName}".`));
+  });
+
+mcpCommand
+  .command("enable")
+  .description("Enable a configured MCP server")
+  .argument("<name>", "Server name")
+  .action(async (name) => {
+    const normalizedName = normalizeMcpServerName(name);
+    const servers = await listMcpServersFromConfig();
+    if (!servers[normalizedName]) {
+      throw new Error(`Unknown MCP server "${normalizedName}".`);
+    }
+    await upsertMcpServer(normalizedName, { enabled: true });
+    console.log(chalk.green(`Enabled MCP server "${normalizedName}".`));
+  });
+
+mcpCommand
+  .command("disable")
+  .description("Disable a configured MCP server")
+  .argument("<name>", "Server name")
+  .action(async (name) => {
+    const normalizedName = normalizeMcpServerName(name);
+    const servers = await listMcpServersFromConfig();
+    if (!servers[normalizedName]) {
+      throw new Error(`Unknown MCP server "${normalizedName}".`);
+    }
+    await upsertMcpServer(normalizedName, { enabled: false });
+    console.log(chalk.green(`Disabled MCP server "${normalizedName}".`));
+  });
+
+mcpCommand
+  .command("trust")
+  .description("Set trust mode for an MCP server (on|off)")
+  .argument("<name>", "Server name")
+  .argument("<mode>", "on|off")
+  .action(async (name, mode) => {
+    const normalizedName = normalizeMcpServerName(name);
+    const servers = await listMcpServersFromConfig();
+    if (!servers[normalizedName]) {
+      throw new Error(`Unknown MCP server "${normalizedName}".`);
+    }
+    const normalizedMode = String(mode ?? "").trim().toLowerCase();
+    if (!["on", "off"].includes(normalizedMode)) {
+      throw new Error('Trust mode must be "on" or "off".');
+    }
+    await upsertMcpServer(normalizedName, { trust: normalizedMode === "on" });
+    console.log(chalk.green(`Trust for "${normalizedName}" set to ${normalizedMode}.`));
+  });
+
+mcpCommand
+  .command("test")
+  .description("Initialize a server and list discovered tools")
+  .argument("<name>", "Server name")
+  .action(async (name) => {
+    const result = await testMcpServer(name);
+    console.log(
+      chalk.green(
+        `MCP server "${result.server}" (${result.type}) is reachable. tools=${result.toolCount}`
+      )
+    );
+    if (result.tools.length > 0) {
+      result.tools.forEach((tool) => console.log(`- ${tool}`));
+    }
+  });
+
+mcpCommand
+  .command("tools")
+  .description("List discovered MCP tools across enabled servers")
+  .argument("[server]", "Optional server name filter")
+  .action(async (server) => {
+    const filter = server ? normalizeMcpServerName(server) : "";
+    const { tools, errors } = await discoverMcpTools();
+    const visibleTools = filter ? tools.filter((tool) => tool.serverName === filter) : tools;
+    if (visibleTools.length === 0) {
+      console.log(chalk.yellow("No MCP tools discovered."));
+    } else {
+      visibleTools
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .forEach((tool) => console.log(`${tool.name}(${tool.args.join(", ")})`));
+    }
+    if (errors.length > 0) {
       console.log("");
-      console.log(chalk.dim("Example:"));
-      console.log(`  ${tool.example}`);
+      console.log(chalk.yellow("Discovery errors:"));
+      errors.forEach((entry) => {
+        console.log(`- ${entry.server}: ${entry.error}`);
+      });
     }
   });
 
@@ -832,10 +1332,12 @@ program
       readConfig(),
       resolveAuthState({ requireClient: false }),
     ]);
+    const mcpSummary = await discoverMcpTools({ workspaceRoot: process.cwd() });
     const report = await runDoctor({
       cwd: process.cwd(),
       authSummary: authState.authSummary,
       config,
+      mcpSummary,
     });
 
     for (const check of report.checks) {

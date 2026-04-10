@@ -39,6 +39,7 @@ test("formatSlashHelpLines contains login and mode commands", () => {
   assert.equal(lines.some((line) => line.startsWith("/tools")), true);
   assert.equal(lines.some((line) => line.startsWith("/memory")), true);
   assert.equal(lines.some((line) => line.startsWith("/doctor")), true);
+  assert.equal(lines.some((line) => line.startsWith("/mcp")), true);
   assert.equal(lines.some((line) => line.startsWith("/yolo")), true);
   assert.equal(lines.some((line) => line.startsWith("/sessions")), true);
 });

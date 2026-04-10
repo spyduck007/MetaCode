@@ -4,6 +4,7 @@ import { promises as fs } from "node:fs";
 import { MIN_AGENT_STEPS, MAX_AGENT_STEPS, normalizeAgentSteps } from "./max-steps.js";
 import { normalizeMode } from "./meta-client.js";
 import { WORKSPACE_MEMORY_FILES } from "./workspace-memory.js";
+import { normalizeMcpServers } from "./mcp-config.js";
 
 function parseNodeMajor(version) {
   const match = String(version || "").match(/^v?(\d+)/);
@@ -14,6 +15,7 @@ export async function runDoctor({
   cwd = process.cwd(),
   authSummary = { source: "none", hasSession: "no" },
   config = {},
+  mcpSummary = null,
 } = {}) {
   const checks = [];
   const nodeMajor = parseNodeMajor(process.version);
@@ -77,8 +79,6 @@ export async function runDoctor({
     });
   }
 
-  const hasErrors = checks.some((check) => check.status === "error");
-
   // Check for workspace memory
   const foundMemoryFiles = [];
   for (const memFile of WORKSPACE_MEMORY_FILES) {
@@ -99,8 +99,59 @@ export async function runDoctor({
         : `No workspace memory file found. Create META.md, METACODE.md, or .meta-code/instructions.md to add persistent project instructions.`,
   });
 
-  return {
-    ok: !hasErrors,
-    checks,
-  };
+  const mcpServers = normalizeMcpServers(config.mcpServers);
+  const mcpEnabled = Object.values(mcpServers).filter((server) => server.enabled);
+  checks.push({
+    name: "mcp-servers",
+    status: mcpEnabled.length > 0 ? "ok" : "warn",
+    detail:
+      mcpEnabled.length > 0
+        ? `${mcpEnabled.length} enabled / ${Object.keys(mcpServers).length} configured`
+        : "No enabled MCP servers configured.",
+  });
+
+  const malformedEnabledServers = mcpEnabled.filter((server) => {
+    if (server.type === "stdio") return !server.command;
+    return !server.url;
+  });
+  if (malformedEnabledServers.length > 0) {
+    checks.push({
+      name: "mcp-config",
+      status: "warn",
+      detail: `Enabled servers missing command/url: ${malformedEnabledServers
+        .map((server) => server.name)
+        .join(", ")}`,
+    });
+  } else if (mcpEnabled.length > 0) {
+    checks.push({
+      name: "mcp-config",
+      status: "ok",
+      detail: "Enabled MCP server configurations look valid.",
+    });
+  }
+
+  if (mcpSummary && typeof mcpSummary === "object") {
+    const toolCount = Array.isArray(mcpSummary.tools) ? mcpSummary.tools.length : 0;
+    const errorCount = Array.isArray(mcpSummary.errors) ? mcpSummary.errors.length : 0;
+    checks.push({
+      name: "mcp-tools",
+      status: toolCount > 0 || mcpEnabled.length === 0 ? "ok" : "warn",
+      detail:
+        toolCount > 0
+          ? `${toolCount} MCP tool(s) discovered.`
+          : mcpEnabled.length > 0
+            ? "No MCP tools discovered from enabled servers."
+            : "No enabled MCP servers to discover tools from.",
+    });
+    if (errorCount > 0) {
+      checks.push({
+        name: "mcp-discovery",
+        status: "warn",
+        detail: mcpSummary.errors.map((entry) => `${entry.server}: ${entry.error}`).join(" | "),
+      });
+    }
+  }
+
+  const hasErrors = checks.some((check) => check.status === "error");
+  return { ok: !hasErrors, checks };
 }

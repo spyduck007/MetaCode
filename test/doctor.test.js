@@ -104,3 +104,32 @@ test("runDoctor ok flag reflects only error-level checks", async () => {
     await rm(workspace, { recursive: true, force: true });
   }
 });
+
+test("runDoctor reports MCP configuration and discovery summary", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "meta-doctor-test-"));
+  try {
+    const report = await runDoctor({
+      cwd: workspace,
+      authSummary: { source: "config", hasSession: "yes" },
+      config: {
+        defaultMode: "think_fast",
+        defaultMaxSteps: 24,
+        mcpServers: {
+          docs: { type: "http", url: "https://example.com/mcp", enabled: true },
+        },
+      },
+      mcpSummary: {
+        tools: [{ name: "mcp.docs.search", serverName: "docs", toolName: "search", args: [] }],
+        errors: [],
+      },
+    });
+    const serversCheck = report.checks.find((check) => check.name === "mcp-servers");
+    const toolsCheck = report.checks.find((check) => check.name === "mcp-tools");
+    assert.ok(serversCheck);
+    assert.ok(toolsCheck);
+    assert.equal(serversCheck.status, "ok");
+    assert.equal(toolsCheck.status, "ok");
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
