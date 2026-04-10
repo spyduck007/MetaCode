@@ -34,6 +34,7 @@ import {
   MIN_AGENT_STEPS,
   normalizeAgentSteps,
 } from "./max-steps.js";
+import { runDoctor } from "./doctor.js";
 
 function toAuthSummary(auth) {
   return {
@@ -639,6 +640,34 @@ memoryCommand
     }
     console.log("");
     console.log(memory.text);
+  });
+
+program
+  .command("doctor")
+  .description("Run quick diagnostics for auth/config/workspace health")
+  .action(async () => {
+    const [config, authState] = await Promise.all([
+      readConfig(),
+      resolveAuthState({ requireClient: false }),
+    ]);
+    const report = await runDoctor({
+      cwd: process.cwd(),
+      authSummary: authState.authSummary,
+      config,
+    });
+
+    for (const check of report.checks) {
+      const statusLabel =
+        check.status === "ok"
+          ? chalk.green("OK")
+          : check.status === "warn"
+            ? chalk.yellow("WARN")
+            : chalk.red("ERROR");
+      console.log(`${statusLabel} ${check.name}: ${check.detail}`);
+    }
+    if (!report.ok) {
+      process.exitCode = 1;
+    }
   });
 
 await program.parseAsync(process.argv);

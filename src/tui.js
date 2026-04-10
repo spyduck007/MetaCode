@@ -18,6 +18,7 @@ import {
   DEFAULT_AGENT_STEPS,
   normalizeAgentSteps,
 } from "./max-steps.js";
+import { runDoctor } from "./doctor.js";
 
 const MAX_MESSAGES = 250;
 const STATUS_HEIGHT = 1;
@@ -73,6 +74,13 @@ function formatWorkspaceMemoryLines(memory) {
     ...(memory.truncated ? ["(memory content truncated for safety)", ""] : [""]),
     ...memory.text.split("\n"),
   ];
+}
+
+function formatDoctorLines(report) {
+  return report.checks.map((check) => {
+    const prefix = check.status === "ok" ? "OK" : check.status === "warn" ? "WARN" : "ERROR";
+    return `${prefix} ${check.name}: ${check.detail}`;
+  });
 }
 
 function formatMessages(messages) {
@@ -966,6 +974,17 @@ export async function startTui({
     if (command.name === "auth") {
       currentAuth = await getAuthSummary();
       pushMessage("system", formatAuthSummary(currentAuth));
+      return false;
+    }
+
+    if (command.name === "doctor") {
+      currentAuth = await getAuthSummary();
+      const report = await runDoctor({
+        cwd: process.cwd(),
+        authSummary: currentAuth,
+        config: { defaultMode: currentSession.mode, defaultMaxSteps: currentMaxSteps },
+      });
+      await showInfoModal(screen, "Doctor", formatDoctorLines(report));
       return false;
     }
 

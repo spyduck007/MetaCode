@@ -50,6 +50,11 @@ export const SLASH_COMMAND_DEFINITIONS = [
     description: "Show current auth source and cookie health.",
   },
   {
+    name: "doctor",
+    usage: "/doctor",
+    description: "Run quick diagnostics for auth/config/workspace health.",
+  },
+  {
     name: "new",
     usage: "/new",
     description: "Start a fresh conversation in the current session.",

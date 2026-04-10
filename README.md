@@ -65,6 +65,7 @@ If the agent gets genuinely blocked, it may ask a single follow-up clarification
 - `/login` — browser login flow, auto-saves cookies to config
 - `/logout` — clears config cookie for this CLI
 - `/auth` — show current auth source and cookie health
+- `/doctor` — run quick diagnostics (auth/config/workspace health)
 - `/new` — start a fresh conversation
 - `/retry` — retry the last non-slash prompt
 - `/sessions` — open session manager (↑/↓ to select, `Enter` to switch, `D` to delete hovered non-active session locally + on Meta; requires auth)
@@ -88,6 +89,7 @@ meta-code auth status
 meta-code auth login
 meta-code auth set-cookie "datr=...; rd_challenge=...; ecto_1_sess=..."
 meta-code auth clear
+meta-code doctor
 ```
 
 If browser login cannot launch initially:
