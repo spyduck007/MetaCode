@@ -13,6 +13,7 @@ import {
   describeToolCallFriendly,
   pickThinkingPhrase,
 } from "./progress-ui.js";
+import { loadWorkspaceMemory, WORKSPACE_MEMORY_FILES } from "./workspace-memory.js";
 
 const MAX_MESSAGES = 250;
 const STATUS_HEIGHT = 1;
@@ -50,6 +51,24 @@ function trimMessageHistory(messages) {
 
 function formatAuthSummary(authSummary) {
   return `source=${authSummary.source}, session_cookie=${authSummary.hasSession}, cookie=${authSummary.redacted}`;
+}
+
+function formatWorkspaceMemoryLines(memory) {
+  if (!memory?.sources?.length) {
+    return [
+      "No workspace instruction files found.",
+      "",
+      `Checked: ${WORKSPACE_MEMORY_FILES.join(", ")}`,
+      "",
+      "Create one of these files to add persistent project instructions.",
+    ];
+  }
+
+  return [
+    `Loaded from: ${memory.sources.join(", ")}`,
+    ...(memory.truncated ? ["(memory content truncated for safety)", ""] : [""]),
+    ...memory.text.split("\n"),
+  ];
 }
 
 function formatMessages(messages) {
@@ -1002,6 +1021,12 @@ export async function startTui({
 
     if (command.name === "tools") {
       await showInfoModal(screen, "Agent File Tools", formatToolDefinitionsForPrompt().split("\n"));
+      return false;
+    }
+
+    if (command.name === "memory") {
+      const memory = await loadWorkspaceMemory(process.cwd());
+      await showInfoModal(screen, "Workspace Memory", formatWorkspaceMemoryLines(memory));
       return false;
     }
 

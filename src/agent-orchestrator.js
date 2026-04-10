@@ -1,6 +1,7 @@
 import { executeFileToolCall, formatToolDefinitionsForPrompt } from "./file-tools.js";
 import path from "node:path";
 import { promises as fs } from "node:fs";
+import { loadWorkspaceMemory } from "./workspace-memory.js";
 
 const MAX_STEPS_DEFAULT = 24;
 const MAX_TOOL_RESULT_CHARS = 18_000;
@@ -45,7 +46,7 @@ export function extractAgentDirective(responseText) {
   return { type: "final", content: text };
 }
 
-function buildAgentBootstrapPrompt({ task, workspaceRoot }) {
+function buildAgentBootstrapPrompt({ task, workspaceRoot, workspaceMemory }) {
   const toolDescriptions = formatToolDefinitionsForPrompt();
   return [
     "You are Meta Code Agent running in tool mode.",
@@ -55,6 +56,14 @@ function buildAgentBootstrapPrompt({ task, workspaceRoot }) {
     "Available tools:",
     toolDescriptions,
     "",
+    ...(workspaceMemory?.text
+      ? [
+          `Workspace instructions loaded from: ${workspaceMemory.sources.join(", ")}`,
+          "Follow these instructions unless they conflict with the user task or system rules.",
+          workspaceMemory.text,
+          "",
+        ]
+      : []),
     "Output format rules (strict):",
     '1) For a tool call, respond ONLY with JSON: {"type":"tool_call","name":"...","arguments":{...},"thought":"short status"}',
     '2) For the final user answer, respond ONLY with JSON: {"type":"final","content":"..."}',
@@ -199,9 +208,9 @@ function buildContinueExecutionPrompt({ previousFinal, missingFiles = [] }) {
   ].join("\n");
 }
 
-function buildRefusalReseedPrompt({ task, workspaceRoot, previousFinal }) {
+function buildRefusalReseedPrompt({ task, workspaceRoot, workspaceMemory, previousFinal }) {
   return [
-    buildAgentBootstrapPrompt({ task, workspaceRoot }),
+    buildAgentBootstrapPrompt({ task, workspaceRoot, workspaceMemory }),
     "",
     "RECOVERY_RESEED",
     "A previous attempt returned an unhelpful refusal.",
@@ -244,10 +253,11 @@ export async function runAgentWithFileTools({
   onCommandApproval,
   onFollowUpQuestion,
 }) {
+  const workspaceMemory = await loadWorkspaceMemory(workspaceRoot);
   let nextConversationId = conversationId;
   let nextBranchPath = currentBranchPath;
   let nextMode = mode;
-  let turnPrompt = buildAgentBootstrapPrompt({ task, workspaceRoot });
+  let turnPrompt = buildAgentBootstrapPrompt({ task, workspaceRoot, workspaceMemory });
   let lastToolCallSignature = "";
   let repeatToolCallCount = 0;
   let toolCallsExecuted = 0;
@@ -300,6 +310,7 @@ export async function runAgentWithFileTools({
             turnPrompt = buildRefusalReseedPrompt({
               task,
               workspaceRoot,
+              workspaceMemory,
               previousFinal: directive.content,
             });
             continue;

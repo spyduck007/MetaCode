@@ -27,6 +27,7 @@ import {
   describeToolCallFriendly,
   pickThinkingPhrase,
 } from "./progress-ui.js";
+import { loadWorkspaceMemory, WORKSPACE_MEMORY_FILES } from "./workspace-memory.js";
 
 function toAuthSummary(auth) {
   return {
@@ -588,6 +589,27 @@ toolsCommand
       console.log(`${tool.name}(${tool.args.join(", ")})`);
       console.log(`  ${tool.description}`);
     });
+  });
+
+const memoryCommand = program
+  .command("memory")
+  .description("Inspect workspace instruction files that guide the agent");
+memoryCommand
+  .command("show")
+  .description("Show loaded workspace memory files and effective instruction text")
+  .action(async () => {
+    const memory = await loadWorkspaceMemory(process.cwd());
+    if (!memory.sources.length) {
+      console.log(chalk.yellow("No workspace memory files found."));
+      console.log(`Checked: ${WORKSPACE_MEMORY_FILES.join(", ")}`);
+      return;
+    }
+    console.log(chalk.bold(`Loaded from: ${memory.sources.join(", ")}`));
+    if (memory.truncated) {
+      console.log(chalk.yellow("Memory text was truncated for safety."));
+    }
+    console.log("");
+    console.log(memory.text);
   });
 
 await program.parseAsync(process.argv);

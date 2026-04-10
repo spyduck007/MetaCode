@@ -12,6 +12,7 @@ Meta Code is an unofficial Meta AI terminal coding client with:
 - Session persistence
 - `think_fast` and `think_hard` modes
 - Tool-enabled agent behavior by default for all prompts
+- Workspace memory files for persistent project instructions
 
 > [!WARNING]
 > Meta Code is in **very early production**. Expect bugs and rough edges.
@@ -70,6 +71,7 @@ If the agent gets genuinely blocked, it may ask a single follow-up clarification
 - `/set-cookie <cookie>` — save cookie directly from UI
 - `/yolo [on|off|status]` — auto-approve terminal command tool requests
 - `/tools` — show available file tools for agent mode
+- `/memory` — show loaded workspace instruction files (`META.md`, `.meta-code/instructions.md`, etc.)
 - `/clear` — clear on-screen chat history
 - `/exit` — quit full-screen mode
 
@@ -96,6 +98,22 @@ npx playwright install chromium
 ```bash
 meta-code config show
 meta-code config set-mode think_hard
+```
+
+## Workspace memory (persistent instructions)
+
+Meta Code auto-loads project instruction files and includes them in every agent run:
+
+- `META.md`
+- `METACODE.md`
+- `.meta-code.md`
+- `.meta-code/instructions.md`
+- `.meta-code/memory.md`
+
+Inspect currently loaded memory from CLI:
+
+```bash
+meta-code memory show
 ```
 
 ## Session commands

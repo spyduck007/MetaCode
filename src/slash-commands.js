@@ -35,6 +35,11 @@ export const SLASH_COMMAND_DEFINITIONS = [
     description: "Show available built-in file tools for agent mode.",
   },
   {
+    name: "memory",
+    usage: "/memory",
+    description: "Show workspace instruction files used to steer the agent.",
+  },
+  {
     name: "auth",
     usage: "/auth",
     description: "Show current auth source and cookie health.",

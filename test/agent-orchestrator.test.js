@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { extractAgentDirective, runAgentWithFileTools } from "../src/agent-orchestrator.js";
 import { executeFileToolCall } from "../src/file-tools.js";
 
@@ -115,6 +115,44 @@ test("runAgentWithFileTools executes tool call then returns final", async () => 
     assert.equal(toolCalls[0].name, "list_dir");
     assert.equal(toolResults.length, 1);
     assert.equal(toolResults[0].ok, true);
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("runAgentWithFileTools injects workspace memory into bootstrap prompt", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "meta-agent-test-"));
+  try {
+    await writeFile(path.join(workspace, "META.md"), "Always keep output compact.", "utf8");
+    const callInputs = [];
+    const scriptedResponses = ['```json\n{"type":"final","content":"Done."}\n```'];
+
+    const fakeClient = {
+      async sendMessage(input) {
+        callInputs.push(input);
+        const content = scriptedResponses.shift();
+        return {
+          content,
+          conversationId: "conv-memory",
+          currentBranchPath: "1",
+          mode: "think_fast",
+        };
+      },
+    };
+
+    const result = await runAgentWithFileTools({
+      client: fakeClient,
+      task: "Do one thing.",
+      conversationId: "conv-memory",
+      currentBranchPath: "0",
+      mode: "think_fast",
+      workspaceRoot: workspace,
+      maxSteps: 2,
+    });
+
+    assert.equal(result.content, "Done.");
+    assert.match(callInputs[0].content, /Workspace instructions loaded from: META.md/);
+    assert.match(callInputs[0].content, /Always keep output compact/);
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }
