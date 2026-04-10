@@ -10,6 +10,7 @@ import { parseSseStream } from "./sse.js";
 
 const NETWORK_RETRY_ATTEMPTS = 2;
 const NETWORK_RETRY_DELAY_MS = 1500;
+const SSE_IDLE_TIMEOUT_MS = 60_000; // 60 s of no new events = assume dead stream
 
 function isRetryableError(error) {
   if (!error) return false;
@@ -20,11 +21,13 @@ function isRetryableError(error) {
     error.code === "ECONNREFUSED" ||
     error.code === "ETIMEDOUT" ||
     error.code === "ENOTFOUND" ||
+    error.code === "SSE_TIMEOUT" ||
     msg.includes("fetch failed") ||
     msg.includes("network error") ||
     msg.includes("econnreset") ||
     msg.includes("socket hang up") ||
-    msg.includes("connection refused")
+    msg.includes("connection refused") ||
+    msg.includes("sse stream timed out")
   );
 }
 
@@ -39,6 +42,49 @@ async function sleep(ms) {
 
 function toUniqueMessageId() {
   return `${Date.now()}${Math.floor(Math.random() * 900 + 100)}`;
+}
+
+/**
+ * Wraps a ReadableStream with an idle timeout. Each read() call must complete
+ * within `timeoutMs` milliseconds; otherwise the stream is cancelled and an
+ * SSE_TIMEOUT error is thrown, allowing the retry loop to attempt again.
+ *
+ * @param {ReadableStream} body
+ * @param {number} timeoutMs
+ * @returns {ReadableStream}
+ */
+function wrapStreamWithIdleTimeout(body, timeoutMs) {
+  const reader = body.getReader();
+  return new ReadableStream({
+    async pull(controller) {
+      let timer;
+      const timeoutPromise = new Promise((_resolve, reject) => {
+        timer = setTimeout(() => {
+          const err = new Error(
+            `SSE stream timed out: no data for ${timeoutMs}ms`
+          );
+          err.code = "SSE_TIMEOUT";
+          reject(err);
+        }, timeoutMs);
+      });
+      try {
+        const { done, value } = await Promise.race([reader.read(), timeoutPromise]);
+        clearTimeout(timer);
+        if (done) {
+          controller.close();
+        } else {
+          controller.enqueue(value);
+        }
+      } catch (err) {
+        clearTimeout(timer);
+        reader.cancel(err).catch(() => {});
+        controller.error(err);
+      }
+    },
+    cancel(reason) {
+      return reader.cancel(reason);
+    },
+  });
 }
 
 export function normalizeMode(value) {
@@ -80,12 +126,13 @@ export function buildDeleteConversationPayload({ conversationId }) {
 }
 
 export class MetaAIClient {
-  constructor({ cookie, retryDelayMs } = {}) {
+  constructor({ cookie, retryDelayMs, sseTimeoutMs } = {}) {
     if (!cookie) {
       throw new Error("Cookie is required for authenticated Meta AI requests.");
     }
     this.cookie = cookie;
     this._retryDelayMs = typeof retryDelayMs === "number" ? retryDelayMs : NETWORK_RETRY_DELAY_MS;
+    this._sseTimeoutMs = typeof sseTimeoutMs === "number" ? sseTimeoutMs : SSE_IDLE_TIMEOUT_MS;
   }
 
   async sendMessage({
@@ -154,7 +201,11 @@ export class MetaAIClient {
         let resultBranchPath = currentBranchPath;
         let resultConversationType = normalizedMode;
 
-        for await (const event of parseSseStream(response.body)) {
+        // Wrap the response body in a timeout-aware stream so a dead/stalled stream
+        // doesn't hang indefinitely. Each chunk must arrive within sseTimeoutMs.
+        const timeoutBody = wrapStreamWithIdleTimeout(response.body, this._sseTimeoutMs);
+
+        for await (const event of parseSseStream(timeoutBody)) {
           onEvent?.(event);
           if (event.event === "complete") break;
           if (event.event !== "next" || !event.data) continue;

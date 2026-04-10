@@ -165,3 +165,55 @@ test("MetaAIClient constructor requires cookie", () => {
   assert.throws(() => new MetaAIClient({}), /Cookie is required/);
   assert.throws(() => new MetaAIClient({ cookie: "" }), /Cookie is required/);
 });
+
+test("MetaAIClient.sendMessage retries on SSE_TIMEOUT and succeeds", async () => {
+  const client = new MetaAIClient({ cookie: "test=cookie", retryDelayMs: 0, sseTimeoutMs: 50 });
+  let callCount = 0;
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    callCount += 1;
+    if (callCount === 1) {
+      // Return a body that never emits any bytes (simulates dead/stalled SSE stream)
+      const { ReadableStream } = await import("node:stream/web");
+      const body = new ReadableStream({
+        start() {
+          // Never call controller.enqueue() or controller.close() -> stream stalls
+        },
+      });
+      return { ok: true, status: 200, body };
+    }
+    // Second call: succeed immediately with a complete event then an assistant message
+    const { ReadableStream } = await import("node:stream/web");
+    const sseText =
+      'event: next\ndata: {"data":{"sendMessageStream":{"__typename":"AssistantMessage","content":"Hello!"}}}\n\n' +
+      'event: complete\ndata: {}\n\n';
+    const encoder = new TextEncoder();
+    const body = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(sseText));
+        controller.close();
+      },
+    });
+    return { ok: true, status: 200, body };
+  };
+
+  try {
+    const result = await client.sendMessage({ content: "hi" });
+    assert.equal(result.content, "Hello!");
+    assert.equal(callCount, 2, "Should retry once after timeout");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("MetaAIClient respects sseTimeoutMs constructor option", () => {
+  const client = new MetaAIClient({ cookie: "test=cookie", sseTimeoutMs: 5000 });
+  assert.equal(client._sseTimeoutMs, 5000);
+});
+
+test("MetaAIClient uses default sseTimeoutMs when not specified", () => {
+  const client = new MetaAIClient({ cookie: "test=cookie" });
+  assert.equal(typeof client._sseTimeoutMs, "number");
+  assert.ok(client._sseTimeoutMs > 0);
+});
