@@ -159,6 +159,12 @@ Inspect currently loaded memory from CLI:
 meta-code memory show
 ```
 
+Create a starter `META.md` workspace memory file:
+
+```bash
+meta-code memory create
+```
+
 Run `/doctor` in the TUI to check if your workspace memory file is detected.
 
 ## Session commands

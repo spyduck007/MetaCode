@@ -105,6 +105,11 @@ export const SLASH_COMMAND_DEFINITIONS = [
     description: "Show files touched by the last agent run.",
   },
   {
+    name: "usage",
+    usage: "/usage",
+    description: "Show quick stats for the current session (messages, steps, touched files).",
+  },
+  {
     name: "exit",
     usage: "/exit",
     description: "Exit the full-screen interface.",

@@ -756,6 +756,12 @@ export async function startTui({
   let inputHistorySavedDraft = "";
   // Track files touched by the last agent run for /diff
   let lastRunTouchedFiles = [];
+  // Session usage stats
+  const sessionStats = {
+    promptsSent: 0,
+    totalTouchedFiles: new Set(),
+    agentStepsTotal: 0,
+  };
 
   function renderStatusBar() {
     const spinner = busy ? SPINNER_FRAMES[spinnerIndex % SPINNER_FRAMES.length] : ">";
@@ -1249,6 +1255,37 @@ export async function startTui({
       return false;
     }
 
+    if (command.name === "usage") {
+      const conversationMessages = messages.filter(
+        (m) => m.role === "user" || m.role === "assistant"
+      );
+      const userMessages = conversationMessages.filter((m) => m.role === "user").length;
+      const assistantMessages = conversationMessages.filter((m) => m.role === "assistant").length;
+      const lines = [
+        `Session: ${currentSessionName}`,
+        `Mode: ${currentSession.mode}`,
+        `Agent mode: ${agentMode ? "on" : "off"}`,
+        `Max steps: ${currentMaxSteps}`,
+        `Yolo: ${yoloMode ? "on" : "off"}`,
+        "",
+        "Activity this session:",
+        `  Prompts sent:         ${sessionStats.promptsSent}`,
+        `  User messages shown:  ${userMessages}`,
+        `  Assistant responses:  ${assistantMessages}`,
+        `  Files created/edited: ${sessionStats.totalTouchedFiles.size}`,
+        "",
+        ...(sessionStats.totalTouchedFiles.size > 0
+          ? [
+              "Touched files:",
+              "",
+              ...[...sessionStats.totalTouchedFiles].map((f) => `  • ${f}`),
+            ]
+          : []),
+      ];
+      await showInfoModal(screen, "Session Usage", lines);
+      return false;
+    }
+
     pushMessage("error", `Unknown command "${command.raw}". Run /help for available commands.`);
     return false;
   }
@@ -1261,6 +1298,7 @@ export async function startTui({
     if (trackAsLastPrompt) {
       lastUserPrompt = content;
     }
+    sessionStats.promptsSent += 1;
 
     pushMessage("user", content, { forceBottom: true });
 
@@ -1354,6 +1392,7 @@ export async function startTui({
             const p = toolResult.result[field];
             if (typeof p === "string" && p !== "." && !lastRunTouchedFiles.includes(p)) {
               lastRunTouchedFiles.push(p);
+              sessionStats.totalTouchedFiles.add(p);
             }
           }
         }

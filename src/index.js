@@ -2,6 +2,7 @@
 
 import { Command } from "commander";
 import chalk from "chalk";
+import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stderr } from "node:process";
 import { DEFAULT_MODE } from "./constants.js";
@@ -678,6 +679,53 @@ memoryCommand
     }
     console.log("");
     console.log(memory.text);
+  });
+
+memoryCommand
+  .command("create")
+  .description("Create a META.md workspace memory file in the current directory")
+  .option("--force", "Overwrite existing META.md if it exists")
+  .action(async (opts) => {
+    const { promises: fs } = await import("node:fs");
+    const targetPath = path.join(process.cwd(), "META.md");
+
+    let exists = false;
+    try {
+      await fs.access(targetPath);
+      exists = true;
+    } catch {
+      // does not exist
+    }
+
+    if (exists && !opts.force) {
+      console.log(chalk.yellow("META.md already exists. Use --force to overwrite it."));
+      process.exitCode = 1;
+      return;
+    }
+
+    const template = [
+      "# Workspace Instructions",
+      "",
+      "This file is automatically loaded by Meta Code and included in every agent run.",
+      "Add persistent instructions, coding conventions, or project context below.",
+      "",
+      "## Project overview",
+      "",
+      "<!-- Describe the project here -->",
+      "",
+      "## Coding conventions",
+      "",
+      "<!-- Add conventions like language, style, naming rules -->",
+      "",
+      "## Things to always/never do",
+      "",
+      "<!-- Examples: always use TypeScript, never delete test files, etc. -->",
+      "",
+    ].join("\n");
+
+    await fs.writeFile(targetPath, template, "utf8");
+    console.log(chalk.green(`Created META.md in ${process.cwd()}`));
+    console.log(chalk.dim("Edit it to add project-specific instructions for the agent."));
   });
 
 program

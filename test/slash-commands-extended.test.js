@@ -79,6 +79,11 @@ test("SLASH_COMMAND_DEFINITIONS includes diff command", () => {
   assert.ok(names.includes("diff"), "diff command should be defined");
 });
 
+test("SLASH_COMMAND_DEFINITIONS includes usage command", () => {
+  const names = SLASH_COMMAND_DEFINITIONS.map((c) => c.name);
+  assert.ok(names.includes("usage"), "usage command should be defined");
+});
+
 test("every SLASH_COMMAND_DEFINITIONS entry has name, usage, and description", () => {
   for (const entry of SLASH_COMMAND_DEFINITIONS) {
     assert.ok(typeof entry.name === "string" && entry.name.length > 0, `${JSON.stringify(entry)} missing name`);
