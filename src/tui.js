@@ -14,6 +14,10 @@ import {
   pickThinkingPhrase,
 } from "./progress-ui.js";
 import { loadWorkspaceMemory, WORKSPACE_MEMORY_FILES } from "./workspace-memory.js";
+import {
+  DEFAULT_AGENT_STEPS,
+  normalizeAgentSteps,
+} from "./max-steps.js";
 
 const MAX_MESSAGES = 250;
 const STATUS_HEIGHT = 1;
@@ -588,6 +592,7 @@ export async function startTui({
   logout,
   setCookie,
   initialSystemMessage = null,
+  defaultMaxSteps = DEFAULT_AGENT_STEPS,
   runAgentTask,
 }) {
   let currentClient = client;
@@ -730,6 +735,8 @@ export async function startTui({
   let lastProgressText = "";
   let lastProgressTs = 0;
   let yoloMode = false;
+  let currentMaxSteps = normalizeAgentSteps(defaultMaxSteps);
+  let lastUserPrompt = "";
   let liveProgressMessage = null;
   let liveProgressBaseText = "";
   const chattedSessions = new Set();
@@ -740,7 +747,9 @@ export async function startTui({
     statusBar.setContent(
       ` ${spinner} session=${escapeTags(currentSessionName)} | mode=${escapeTags(
         currentSession.mode
-      )} | yolo=${yoloMode ? "on" : "off"} | auth=${escapeTags(currentAuth.source)} | ${escapeTags(activity)} `
+      )} | steps=${currentMaxSteps} | yolo=${yoloMode ? "on" : "off"} | auth=${escapeTags(
+        currentAuth.source
+      )} | ${escapeTags(activity)} `
     );
   }
 
@@ -964,10 +973,38 @@ export async function startTui({
       currentAuth = await getAuthSummary();
       pushMessage(
         "system",
-        `session=${currentSessionName}, mode=${currentSession.mode}, yolo=${yoloMode ? "on" : "off"}, conversation=${currentSession.conversationId}, ${formatAuthSummary(
+        `session=${currentSessionName}, mode=${currentSession.mode}, max_steps=${currentMaxSteps}, yolo=${yoloMode ? "on" : "off"}, conversation=${currentSession.conversationId}, ${formatAuthSummary(
           currentAuth
         )}`
       );
+      return false;
+    }
+
+    if (command.name === "max-steps") {
+      const raw = command.args[0];
+      if (!raw || raw.toLowerCase() === "status") {
+        pushMessage("system", `max steps is ${currentMaxSteps}.`);
+        return false;
+      }
+      try {
+        currentMaxSteps = normalizeAgentSteps(raw, currentMaxSteps);
+        pushMessage("system", `max steps set to ${currentMaxSteps} for this session.`);
+      } catch (error) {
+        pushMessage(
+          "error",
+          `${error.message} (usage: /max-steps <count> or /max-steps status)`
+        );
+      }
+      return false;
+    }
+
+    if (command.name === "retry") {
+      if (!lastUserPrompt) {
+        pushMessage("error", "No previous prompt to retry.");
+        return false;
+      }
+      pushMessage("system", "Retrying the last prompt.");
+      await sendPrompt(lastUserPrompt, { trackAsLastPrompt: false });
       return false;
     }
 
@@ -1082,10 +1119,13 @@ export async function startTui({
     return false;
   }
 
-  async function sendPrompt(content) {
+  async function sendPrompt(content, { trackAsLastPrompt = true } = {}) {
     if (!runAgentTask) {
       pushMessage("error", "Agent runtime is unavailable.");
       return;
+    }
+    if (trackAsLastPrompt) {
+      lastUserPrompt = content;
     }
 
     pushMessage("user", content, { forceBottom: true });
@@ -1095,6 +1135,7 @@ export async function startTui({
       client: currentClient,
       task: content,
       session: currentSession,
+      maxSteps: currentMaxSteps,
       onStatus: (message) => {
         const friendly = describeAgentStatusFriendly(message);
         setStatus(friendly === "finalizing answer" ? "wrapping up" : "working");

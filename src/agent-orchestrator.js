@@ -2,8 +2,8 @@ import { executeFileToolCall, formatToolDefinitionsForPrompt } from "./file-tool
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import { loadWorkspaceMemory } from "./workspace-memory.js";
+import { DEFAULT_AGENT_STEPS } from "./max-steps.js";
 
-const MAX_STEPS_DEFAULT = 24;
 const MAX_TOOL_RESULT_CHARS = 18_000;
 const MAX_REPEAT_TOOL_CALLS = 3;
 const MAX_FOLLOW_UP_QUESTIONS = 1;
@@ -245,7 +245,7 @@ export async function runAgentWithFileTools({
   currentBranchPath,
   mode,
   workspaceRoot,
-  maxSteps = MAX_STEPS_DEFAULT,
+  maxSteps = DEFAULT_AGENT_STEPS,
   onStatus,
   onThinking,
   onToolCall,

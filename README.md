@@ -48,6 +48,7 @@ One-shot mode:
 
 ```bash
 meta-code -m think_fast "Write a Python quicksort"
+meta-code --max-steps 40 "Implement and test an LRU cache"
 meta-code --json -m think_hard "Design a migration strategy"
 meta-code --yolo "Create a starter React app in this folder"
 ```
@@ -60,10 +61,12 @@ If the agent gets genuinely blocked, it may ask a single follow-up clarification
 - `/help` — open command help menu with explanations
 - `/mode` — open mode picker menu (`think_fast` / `think_hard`)
 - `/mode <value>` — set mode directly
+- `/max-steps [count|status]` — tune autonomous step budget for this TUI session
 - `/login` — browser login flow, auto-saves cookies to config
 - `/logout` — clears config cookie for this CLI
 - `/auth` — show current auth source and cookie health
 - `/new` — start a fresh conversation
+- `/retry` — retry the last non-slash prompt
 - `/sessions` — open session manager (↑/↓ to select, `Enter` to switch, `D` to delete hovered non-active session locally + on Meta; requires auth)
 - `/sessions <name>` — switch session directly
 - `/sessions delete <name>` — delete a stored session locally + on Meta
@@ -98,6 +101,7 @@ npx playwright install chromium
 ```bash
 meta-code config show
 meta-code config set-mode think_hard
+meta-code config set-max-steps 40
 ```
 
 ## Workspace memory (persistent instructions)

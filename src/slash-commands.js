@@ -10,6 +10,11 @@ export const SLASH_COMMAND_DEFINITIONS = [
     description: "Set model mode. Run /mode with no args to open mode picker menu.",
   },
   {
+    name: "max-steps",
+    usage: "/max-steps [count|status]",
+    description: "Set max agent steps for this TUI session.",
+  },
+  {
     name: "login",
     usage: "/login",
     description: "Open browser login flow and save cookies automatically.",
@@ -48,6 +53,11 @@ export const SLASH_COMMAND_DEFINITIONS = [
     name: "new",
     usage: "/new",
     description: "Start a fresh conversation in the current session.",
+  },
+  {
+    name: "retry",
+    usage: "/retry",
+    description: "Retry the last non-slash prompt in the current session.",
   },
   {
     name: "sessions",

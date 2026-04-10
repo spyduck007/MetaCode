@@ -28,6 +28,12 @@ import {
   pickThinkingPhrase,
 } from "./progress-ui.js";
 import { loadWorkspaceMemory, WORKSPACE_MEMORY_FILES } from "./workspace-memory.js";
+import {
+  DEFAULT_AGENT_STEPS,
+  MAX_AGENT_STEPS,
+  MIN_AGENT_STEPS,
+  normalizeAgentSteps,
+} from "./max-steps.js";
 
 function toAuthSummary(auth) {
   return {
@@ -100,6 +106,7 @@ async function buildRuntime(
     (freshSessionOnLaunch ? generateSessionName("chat") : "default");
   const { session } = await ensureSession(sessionName);
   const mode = normalizeMode(options.mode ?? session.mode ?? config.defaultMode ?? DEFAULT_MODE);
+  const maxSteps = normalizeAgentSteps(options.maxSteps ?? config.defaultMaxSteps ?? DEFAULT_AGENT_STEPS);
 
   const baseSession = options.new ? await resetSession(sessionName) : session;
   const hydratedSession = await updateSession(sessionName, { ...baseSession, mode });
@@ -108,6 +115,7 @@ async function buildRuntime(
     client,
     sessionName,
     session: hydratedSession,
+    maxSteps,
     authSummary,
     launchedFreshSession: freshSessionOnLaunch && !hasExplicitSession,
   };
@@ -118,6 +126,7 @@ async function runAgentTask({
   task,
   session,
   workspaceRoot = process.cwd(),
+  maxSteps,
   onStatus,
   onThinking,
   onToolCall,
@@ -135,6 +144,7 @@ async function runAgentTask({
     currentBranchPath: session.currentBranchPath,
     mode: session.mode,
     workspaceRoot,
+    maxSteps,
     onStatus,
     onThinking,
     onToolCall,
@@ -299,6 +309,10 @@ program
   .description("Meta Code: full-screen coding agent with slash commands")
   .argument("[prompt...]", "One-shot prompt text. Omit for full-screen interactive mode.")
   .option("-m, --mode <mode>", "think_fast | think_hard")
+  .option(
+    "--max-steps <count>",
+    `Maximum autonomous agent steps (${MIN_AGENT_STEPS}-${MAX_AGENT_STEPS})`
+  )
   .option("-s, --session <name>", "Session name")
   .option("-n, --new", "Start a new conversation in this session")
   .option("--yolo", "Auto-approve terminal command tool calls")
@@ -330,10 +344,12 @@ program
           initialSystemMessage: runtime.launchedFreshSession
             ? `Started a fresh session "${runtime.sessionName}" for this launch.`
             : null,
+          defaultMaxSteps: runtime.maxSteps,
           runAgentTask: async ({
             client,
             task,
             session,
+            maxSteps,
             onStatus,
             onThinking,
             onToolCall,
@@ -345,6 +361,7 @@ program
               client: client ?? runtime.client,
               task,
               session,
+              maxSteps: maxSteps ?? runtime.maxSteps,
               onStatus,
               onThinking,
               onToolCall,
@@ -378,6 +395,7 @@ program
         client: runtime.client,
         task: prompt,
         session: runtime.session,
+        maxSteps: runtime.maxSteps,
         onStatus: (message) => progress(describeAgentStatusFriendly(message)),
         onThinking: (message) => {
           thinkingPhrase = message?.trim() || pickThinkingPhrase(thinkingPhrase);
@@ -426,6 +444,7 @@ program
               conversationId: result.conversationId,
               branchPath: result.currentBranchPath,
               mode: result.mode,
+              maxSteps: runtime.maxSteps,
             },
             null,
             2
@@ -518,6 +537,16 @@ configCommand
     const normalized = normalizeMode(mode);
     await updateConfig({ defaultMode: normalized });
     console.log(chalk.green(`Default mode set to ${normalized}`));
+  });
+
+configCommand
+  .command("set-max-steps")
+  .description(`Set default agent max steps (${MIN_AGENT_STEPS}-${MAX_AGENT_STEPS})`)
+  .argument("<count>", "Integer max steps")
+  .action(async (count) => {
+    const normalized = normalizeAgentSteps(count);
+    await updateConfig({ defaultMaxSteps: normalized });
+    console.log(chalk.green(`Default max steps set to ${normalized}`));
   });
 
 const sessionsCommand = program.command("sessions").description("Inspect and manage local sessions");

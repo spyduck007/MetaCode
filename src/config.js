@@ -3,6 +3,7 @@ import path from "node:path";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { APP_DIR_NAME, DEFAULT_MODE, LEGACY_APP_DIR_NAME } from "./constants.js";
+import { DEFAULT_AGENT_STEPS } from "./max-steps.js";
 
 function resolveDefaultBaseDir() {
   const home = os.homedir();
@@ -52,7 +53,14 @@ async function writeJsonFile(filePath, value) {
 
 export async function readConfig(baseDir) {
   const { configPath } = getAppPaths(baseDir);
-  return readJsonFile(configPath, { defaultMode: DEFAULT_MODE });
+  const loaded = await readJsonFile(configPath, {});
+  return {
+    ...loaded,
+    defaultMode: loaded.defaultMode ?? DEFAULT_MODE,
+    defaultMaxSteps: Number.isInteger(loaded.defaultMaxSteps)
+      ? loaded.defaultMaxSteps
+      : DEFAULT_AGENT_STEPS,
+  };
 }
 
 export async function writeConfig(config, baseDir) {
@@ -60,6 +68,9 @@ export async function writeConfig(config, baseDir) {
   const { configPath } = getAppPaths(baseDir);
   const normalized = {
     defaultMode: config.defaultMode ?? DEFAULT_MODE,
+    ...(Number.isInteger(config.defaultMaxSteps)
+      ? { defaultMaxSteps: config.defaultMaxSteps }
+      : {}),
     ...(config.cookie ? { cookie: config.cookie } : {}),
   };
   await writeJsonFile(configPath, normalized);
