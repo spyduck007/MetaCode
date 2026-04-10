@@ -128,7 +128,15 @@ export class MetaAIClient {
 
         if (!response.ok) {
           const errorBody = await response.text();
-          const err = new Error(`Meta API request failed: ${response.status} ${errorBody}`);
+          let message;
+          if (response.status === 401 || response.status === 403) {
+            message = `Authentication failed (${response.status}): Your session cookie has expired or is invalid. Run \`meta-code auth login\` or \`meta-code auth set-cookie <cookie>\` to re-authenticate.`;
+          } else if (response.status === 429) {
+            message = `Rate limited (429): You are sending requests too fast. Please wait a moment and try again.`;
+          } else {
+            message = `Meta API request failed: ${response.status} ${errorBody}`;
+          }
+          const err = new Error(message);
           err.status = response.status;
           if (isRetryableStatus(response.status) && attempt < NETWORK_RETRY_ATTEMPTS) {
             lastError = err;
