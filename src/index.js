@@ -550,6 +550,44 @@ configCommand
     console.log(chalk.green(`Default max steps set to ${normalized}`));
   });
 
+configCommand
+  .command("init")
+  .description("Interactive first-time setup: choose default mode and max steps")
+  .action(async () => {
+    const rl = createInterface({ input: process.stdin, output: process.stderr });
+
+    console.log(chalk.cyan("Meta Code — first-time setup"));
+    console.log(chalk.dim("Press Enter to keep the default value shown in brackets.\n"));
+
+    const modeAnswer = ((await rl.question(`Default mode [think_fast / think_hard] (default: think_fast): `)) || "").trim();
+    let defaultMode;
+    try {
+      defaultMode = normalizeMode(modeAnswer || "think_fast");
+    } catch {
+      console.log(chalk.yellow(`Invalid mode "${modeAnswer}", using think_fast.`));
+      defaultMode = "think_fast";
+    }
+
+    const stepsAnswer = ((await rl.question(`Default max agent steps [${MIN_AGENT_STEPS}-${MAX_AGENT_STEPS}] (default: ${DEFAULT_AGENT_STEPS}): `)) || "").trim();
+    let defaultMaxSteps;
+    try {
+      defaultMaxSteps = normalizeAgentSteps(stepsAnswer || DEFAULT_AGENT_STEPS);
+    } catch {
+      console.log(chalk.yellow(`Invalid steps "${stepsAnswer}", using ${DEFAULT_AGENT_STEPS}.`));
+      defaultMaxSteps = DEFAULT_AGENT_STEPS;
+    }
+
+    rl.close();
+
+    await updateConfig({ defaultMode, defaultMaxSteps });
+    console.log("");
+    console.log(chalk.green("Configuration saved:"));
+    console.log(`  defaultMode:     ${defaultMode}`);
+    console.log(`  defaultMaxSteps: ${defaultMaxSteps}`);
+    console.log("");
+    console.log(chalk.dim("Run `meta-code auth login` to complete setup."));
+  });
+
 const sessionsCommand = program.command("sessions").description("Inspect and manage local sessions");
 sessionsCommand
   .command("list")
