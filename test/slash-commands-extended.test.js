@@ -170,3 +170,14 @@ test("pin command has usage including [text]", () => {
   assert.ok(cmd, "pin command should exist");
   assert.ok(cmd.usage.includes("text"), "pin usage should describe the text argument");
 });
+
+test("SLASH_COMMAND_DEFINITIONS includes undo command", () => {
+  const names = SLASH_COMMAND_DEFINITIONS.map((c) => c.name);
+  assert.ok(names.includes("undo"), "undo command should be defined");
+});
+
+test("undo command has a description", () => {
+  const cmd = SLASH_COMMAND_DEFINITIONS.find((c) => c.name === "undo");
+  assert.ok(cmd, "undo command should exist");
+  assert.ok(cmd.description.length > 5, "undo should have a meaningful description");
+});

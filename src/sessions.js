@@ -95,3 +95,40 @@ export async function listSessions(baseDir) {
     sessions: state.sessions,
   };
 }
+
+/**
+ * Rename a session to a new name.
+ * - The new name must not already exist.
+ * - If the renamed session was the active session, the active session pointer is updated.
+ */
+export async function renameSession(oldName, newName, baseDir) {
+  const normalizedOld = oldName?.trim();
+  const normalizedNew = newName?.trim();
+  if (!normalizedOld) return { renamed: false, reason: "old_name_empty" };
+  if (!normalizedNew) return { renamed: false, reason: "new_name_empty" };
+  if (normalizedOld === normalizedNew) return { renamed: false, reason: "same_name" };
+  if (!/^[a-zA-Z0-9_-]+$/.test(normalizedNew)) {
+    return { renamed: false, reason: "invalid_new_name" };
+  }
+
+  const state = await readSessionState(baseDir);
+  if (!state.sessions[normalizedOld]) {
+    return { renamed: false, reason: "not_found" };
+  }
+  if (state.sessions[normalizedNew]) {
+    return { renamed: false, reason: "already_exists" };
+  }
+
+  state.sessions[normalizedNew] = {
+    ...state.sessions[normalizedOld],
+    updatedAt: new Date().toISOString(),
+  };
+  delete state.sessions[normalizedOld];
+
+  if (state.activeSession === normalizedOld) {
+    state.activeSession = normalizedNew;
+  }
+
+  await writeSessionState(state, baseDir);
+  return { renamed: true, activeSession: state.activeSession };
+}

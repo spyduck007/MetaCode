@@ -1,4 +1,5 @@
 import blessed from "blessed";
+import path from "node:path";
 import { normalizeMode } from "./meta-client.js";
 import {
   completeSlashCommand,
@@ -764,6 +765,9 @@ export async function startTui({
   };
   // Pinned context: prepended to every agent task for this session
   let pinnedContext = "";
+  // Undo stack: each entry is { path, previousContent, description }
+  // previousContent is null if the file didn't exist before the agent created it.
+  const undoStack = [];
 
   function renderStatusBar() {
     const spinner = busy ? SPINNER_FRAMES[spinnerIndex % SPINNER_FRAMES.length] : ">";
@@ -1288,6 +1292,29 @@ export async function startTui({
       return false;
     }
 
+    if (command.name === "undo") {
+      if (undoStack.length === 0) {
+        pushMessage("system", "Nothing to undo. No file changes have been tracked this session.");
+        return false;
+      }
+      const entry = undoStack.pop();
+      const { promises: fsp } = await import("node:fs");
+      try {
+        if (entry.previousContent === null) {
+          // File didn't exist before — delete it
+          await fsp.rm(entry.absPath, { force: true });
+          pushMessage("system", `Undid: removed ${entry.path} (it was created by the agent).`);
+        } else {
+          // Restore previous content
+          await fsp.writeFile(entry.absPath, entry.previousContent, "utf8");
+          pushMessage("system", `Undid: restored ${entry.path} to its pre-agent state.`);
+        }
+      } catch (err) {
+        pushMessage("error", `Undo failed for ${entry.path}: ${err.message}`);
+      }
+      return false;
+    }
+
     if (command.name === "pin") {
       const text = command.args.join(" ").trim();
       if (!text) {
@@ -1412,10 +1439,35 @@ export async function startTui({
       onThinking: (message) => {
         pushProgress(message?.trim() || pickThinkingPhrase(lastProgressText));
       },
-      onToolCall: (call) => {
+      onToolCall: async (call) => {
         const friendly = describeToolCallFriendly(call);
         setStatus("working");
         pushProgress(friendly);
+
+        // Snapshot files before write/edit/patch/delete for undo support
+        const writeOps = ["write_file", "edit_file", "patch_file", "delete_path", "append_file"];
+        if (writeOps.includes(call?.name) && call?.arguments?.path) {
+          const filePath = call.arguments.path;
+          const absPath = path.isAbsolute(filePath)
+            ? filePath
+            : path.join(process.cwd(), filePath);
+          let previousContent = null;
+          try {
+            const { promises: fsp } = await import("node:fs");
+            previousContent = await fsp.readFile(absPath, "utf8");
+          } catch {
+            // file didn't exist — previousContent stays null
+          }
+          undoStack.push({
+            path: filePath,
+            absPath,
+            previousContent,
+            toolName: call.name,
+            description: friendly,
+          });
+          // Cap undo stack at 20 entries
+          if (undoStack.length > 20) undoStack.shift();
+        }
       },
       onToolResult: (toolResult) => {
         if (!toolResult.ok) {

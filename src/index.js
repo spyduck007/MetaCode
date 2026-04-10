@@ -16,6 +16,7 @@ import {
   generateSessionName,
   listSessions,
   readSessionState,
+  renameSession,
   resetSession,
   updateSession,
   writeSessionState,
@@ -689,6 +690,33 @@ sessionsCommand
       console.log(`activeSession=${result.activeSession}`);
     } else {
       console.log("activeSession=<none>");
+    }
+  });
+
+sessionsCommand
+  .command("rename")
+  .description("Rename a session (only renames locally)")
+  .argument("<old-name>", "Current session name")
+  .argument("<new-name>", "New session name (alphanumeric, hyphens and underscores only)")
+  .action(async (oldName, newName) => {
+    const result = await renameSession(oldName, newName);
+    if (!result.renamed) {
+      const messages = {
+        not_found: `Session "${oldName}" was not found.`,
+        already_exists: `Session "${newName}" already exists. Choose a different name.`,
+        same_name: "Old and new names are the same.",
+        old_name_empty: "Old session name cannot be empty.",
+        new_name_empty: "New session name cannot be empty.",
+        invalid_new_name:
+          'New session name must only contain letters, numbers, hyphens, and underscores.',
+      };
+      console.error(chalk.red(messages[result.reason] ?? `Rename failed: ${result.reason}`));
+      process.exitCode = 1;
+      return;
+    }
+    console.log(chalk.green(`Session renamed: "${oldName}" → "${newName}"`));
+    if (result.activeSession === newName) {
+      console.log(chalk.dim("(Active session pointer updated to new name.)"));
     }
   });
 

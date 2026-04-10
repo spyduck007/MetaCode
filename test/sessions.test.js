@@ -7,7 +7,9 @@ import {
   deleteSession,
   ensureSession,
   generateSessionName,
+  listSessions,
   readSessionState,
+  renameSession,
   resetSession,
   updateSession,
 } from "../src/sessions.js";
@@ -92,4 +94,82 @@ test("generateSessionName creates unique prefixed names", () => {
   assert.equal(a.startsWith("chat-"), true);
   assert.equal(b.startsWith("chat-"), true);
   assert.notEqual(a, b);
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// renameSession
+// ──────────────────────────────────────────────────────────────────────────────
+
+test("renameSession renames a session successfully", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "meta-sess-rename-"));
+  try {
+    await ensureSession("old-name", dir);
+    const result = await renameSession("old-name", "new-name", dir);
+    assert.equal(result.renamed, true);
+    const info = await listSessions(dir);
+    assert.ok(info.sessions["new-name"], "new-name should exist");
+    assert.ok(!info.sessions["old-name"], "old-name should not exist");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("renameSession updates active session pointer", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "meta-sess-rename-active-"));
+  try {
+    await ensureSession("active-old", dir);
+    const result = await renameSession("active-old", "active-new", dir);
+    assert.equal(result.renamed, true);
+    assert.equal(result.activeSession, "active-new");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("renameSession returns not_found for unknown session", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "meta-sess-rename-miss-"));
+  try {
+    const result = await renameSession("does-not-exist", "new-name", dir);
+    assert.equal(result.renamed, false);
+    assert.equal(result.reason, "not_found");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("renameSession returns already_exists when target name taken", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "meta-sess-rename-dup-"));
+  try {
+    await ensureSession("alpha", dir);
+    await ensureSession("beta", dir);
+    const result = await renameSession("alpha", "beta", dir);
+    assert.equal(result.renamed, false);
+    assert.equal(result.reason, "already_exists");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("renameSession returns invalid_new_name for names with spaces", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "meta-sess-rename-inv-"));
+  try {
+    await ensureSession("good-name", dir);
+    const result = await renameSession("good-name", "bad name!", dir);
+    assert.equal(result.renamed, false);
+    assert.equal(result.reason, "invalid_new_name");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("renameSession returns same_name when old and new are equal", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "meta-sess-rename-same-"));
+  try {
+    await ensureSession("my-session", dir);
+    const result = await renameSession("my-session", "my-session", dir);
+    assert.equal(result.renamed, false);
+    assert.equal(result.reason, "same_name");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

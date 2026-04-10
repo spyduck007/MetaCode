@@ -116,6 +116,11 @@ export const SLASH_COMMAND_DEFINITIONS = [
       "Pin persistent context that is prepended to every agent task this session. Run without args to view or clear pinned text.",
   },
   {
+    name: "undo",
+    usage: "/undo",
+    description: "Undo the last file write/edit/delete performed by the agent this session.",
+  },
+  {
     name: "exit",
     usage: "/exit",
     description: "Exit the full-screen interface.",
