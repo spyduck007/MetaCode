@@ -1347,11 +1347,14 @@ export async function startTui({
             { forceBottom: true }
           );
           pushProgress("recovering from an issue and trying again");
-        } else if (toolResult.result?.path) {
+        } else if (toolResult.result) {
           // Track files touched by the agent for /diff
-          const p = toolResult.result.path;
-          if (typeof p === "string" && p !== "." && !lastRunTouchedFiles.includes(p)) {
-            lastRunTouchedFiles.push(p);
+          // Different tools use different fields: path, to (move_path), from (move_path)
+          for (const field of ["path", "to"]) {
+            const p = toolResult.result[field];
+            if (typeof p === "string" && p !== "." && !lastRunTouchedFiles.includes(p)) {
+              lastRunTouchedFiles.push(p);
+            }
           }
         }
       },

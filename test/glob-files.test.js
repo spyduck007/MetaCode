@@ -159,18 +159,37 @@ test("patch_file requires hunks argument", async () => {
   }
 });
 
-test("patch_file applies a simple addition hunk", async () => {
+test("patch_file applies a unified diff that replaces a line", async () => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "meta-patch-"));
   try {
     await writeFile(path.join(workspace, "file.txt"), "line1\nline2\nline3\n");
-    const hunk = "@@ -2,1 +2,2 @@\n line2\n+inserted\n line3\n";
+    // Proper unified diff: replace line2 with two new lines
+    const hunk = "@@ -1,3 +1,4 @@\n line1\n-line2\n+new-line2\n+extra-line\n line3\n";
     const result = await executeFileToolCall(
       { name: "patch_file", arguments: { path: "file.txt", hunks: hunk } },
       { workspaceRoot: workspace }
     );
     assert.equal(result.ok, true);
     const content = await readFile(path.join(workspace, "file.txt"), "utf8");
-    assert.ok(content.includes("inserted"));
+    assert.ok(content.includes("new-line2"), "replacement line should be present");
+    assert.ok(content.includes("extra-line"), "added line should be present");
+    assert.ok(!content.includes("\nline2\n"), "original line should be gone");
+    assert.ok(content.includes("line1"), "context line before should remain");
+    assert.ok(content.includes("line3"), "context line after should remain");
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("patch_file returns error for missing path argument", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "meta-patch-"));
+  try {
+    const result = await executeFileToolCall(
+      { name: "patch_file", arguments: { hunks: "@@ -1,1 +1,1 @@\n-x\n+y\n" } },
+      { workspaceRoot: workspace }
+    );
+    assert.equal(result.ok, false);
+    assert.match(result.error, /"path" is required/i);
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }

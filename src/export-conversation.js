@@ -3,6 +3,8 @@ import { promises as fs } from "node:fs";
 
 /**
  * Format a messages array into a markdown document.
+ * Only `user`, `assistant`, and `error` role messages are included in the
+ * export body. `banner` and `system` messages are excluded.
  * @param {Array<{role: string, text: string}>} messages
  * @param {object} opts
  * @param {string} [opts.sessionName]

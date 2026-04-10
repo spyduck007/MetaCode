@@ -515,6 +515,7 @@ async function toolPatchFile(args, workspaceRoot) {
 
 function applyUnifiedDiff(originalLines, hunksText) {
   // Parse and apply unified diff hunks (lines starting with @@).
+  // @@ -origStart,origCount +newStart,newCount @@
   const hunkRegex = /^@@\s*-(\d+)(?:,(\d+))?\s*\+(\d+)(?:,(\d+))?\s*@@/;
   const diffLines = hunksText.split(/\r?\n/);
   const result = [...originalLines];
@@ -528,7 +529,9 @@ function applyUnifiedDiff(originalLines, hunksText) {
       continue;
     }
 
-    const origStart = Number.parseInt(headerMatch[1], 10) - 1;
+    const origStart = Number.parseInt(headerMatch[1], 10) - 1; // convert to 0-indexed
+    const origCount = headerMatch[2] !== undefined ? Number.parseInt(headerMatch[2], 10) : 1;
+
     const hunkLines = [];
     i += 1;
 
@@ -537,16 +540,18 @@ function applyUnifiedDiff(originalLines, hunksText) {
       i += 1;
     }
 
-    const removals = hunkLines.filter((l) => l.startsWith("-")).map((l) => l.slice(1));
-    const additions = hunkLines.filter((l) => l.startsWith("+")).map((l) => l.slice(1));
-    const contextCount = hunkLines.filter((l) => l.startsWith(" ")).length;
-    const removeCount = removals.length;
+    // Lines to insert: context lines (` `) and additions (`+`), with prefix stripped
+    const replacementLines = hunkLines
+      .filter((l) => !l.startsWith("-"))
+      .map((l) => l.slice(1));
 
     const spliceAt = origStart + offset;
-    result.splice(spliceAt, removeCount + contextCount, ...hunkLines
-      .filter((l) => !l.startsWith("-"))
-      .map((l) => l.slice(1)));
-    offset += additions.length - removeCount;
+    // Remove origCount lines (context + removals from the original) and replace
+    result.splice(spliceAt, origCount, ...replacementLines);
+
+    const addedCount = hunkLines.filter((l) => l.startsWith("+")).length;
+    const removedCount = hunkLines.filter((l) => l.startsWith("-")).length;
+    offset += addedCount - removedCount;
   }
 
   return result;
