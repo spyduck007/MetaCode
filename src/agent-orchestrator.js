@@ -21,6 +21,16 @@ function truncateText(value, maxChars = MAX_TOOL_RESULT_CHARS) {
   return `${value.slice(0, maxChars)}\n...[truncated]`;
 }
 
+function normalizeFinalDeltaText({ rawDeltaText, finalContent }) {
+  if (typeof finalContent !== "string") return "";
+  const parsedRaw = parseCandidateJson(rawDeltaText ?? "");
+  const parsedDirective = parsedRaw ? coerceParsedDirective(parsedRaw) : null;
+  if (parsedDirective?.type === "final" && typeof parsedDirective.content === "string") {
+    return parsedDirective.content;
+  }
+  return finalContent;
+}
+
 export function extractAgentDirective(responseText) {
   const text = responseText?.trim() ?? "";
   if (!text) {
@@ -299,9 +309,15 @@ export async function runAgentWithFileTools({
     const directive = extractAgentDirective(assistantResponse.content);
 
     if (directive.type === "final") {
-      // Forward captured deltas to caller only now that we know it's a final
-      if (onDelta && pendingDeltas) {
-        onDelta(pendingDeltas, { final: true });
+      // Forward only user-facing final text, not protocol wrapper JSON.
+      if (onDelta) {
+        onDelta(
+          normalizeFinalDeltaText({
+            rawDeltaText: pendingDeltas,
+            finalContent: directive.content,
+          }),
+          { final: true }
+        );
       }
       const finalCheck = await validateFinalResponse({
         task,
@@ -455,7 +471,7 @@ export async function runAgentWithFileTools({
     if (directive.thought) {
       onThinking?.(directive.thought);
     }
-    onToolCall?.(directive);
+    await onToolCall?.(directive);
     const toolOutcome = await executeFileToolCall(directive, {
       workspaceRoot,
       confirmCommand:
@@ -490,7 +506,15 @@ export async function runAgentWithFileTools({
   });
   const finalDirective = extractAgentDirective(finalAttempt.content);
   if (finalDirective.type === "final") {
-    if (onDelta && forceFinalDeltas) onDelta(forceFinalDeltas, { final: true });
+    if (onDelta) {
+      onDelta(
+        normalizeFinalDeltaText({
+          rawDeltaText: forceFinalDeltas,
+          finalContent: finalDirective.content,
+        }),
+        { final: true }
+      );
+    }
     return {
       content: finalDirective.content,
       conversationId: finalAttempt.conversationId,

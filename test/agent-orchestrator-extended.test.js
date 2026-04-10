@@ -353,6 +353,51 @@ test("runAgentWithFileTools calls onDelta with final answer content", async () =
     });
 
     assert.ok(deltas.length > 0, "onDelta should have been called");
+    assert.equal(deltas[deltas.length - 1], "The answer is 42.");
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("runAgentWithFileTools awaits onToolCall before executing tool", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "meta-agent-toolcall-order-"));
+  try {
+    const scriptedResponses = [
+      '{"type":"tool_call","name":"write_file","arguments":{"path":"ordered.txt","content":"ok"}}',
+      '{"type":"final","content":"Done."}',
+    ];
+
+    let snapshotDone = false;
+    let snapshotDoneAtToolResult = false;
+    const fakeClient = {
+      async sendMessage() {
+        return {
+          content: scriptedResponses.shift(),
+          conversationId: "conv-order",
+          currentBranchPath: "0",
+          mode: "think_fast",
+        };
+      },
+    };
+
+    await runAgentWithFileTools({
+      client: fakeClient,
+      task: "Write a file.",
+      conversationId: "conv-order",
+      currentBranchPath: "0",
+      mode: "think_fast",
+      workspaceRoot: workspace,
+      onToolCall: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        snapshotDone = true;
+      },
+      onToolResult: () => {
+        snapshotDoneAtToolResult = snapshotDone;
+      },
+    });
+
+    assert.equal(snapshotDone, true);
+    assert.equal(snapshotDoneAtToolResult, true);
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }
