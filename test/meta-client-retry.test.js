@@ -90,7 +90,7 @@ test("MetaAIClient.sendMessage does not retry on 401 auth error", async () => {
   try {
     await assert.rejects(
       () => client.sendMessage({ content: "hello" }),
-      /Meta API request failed: 401/
+      /Authentication failed \(401\)/
     );
     assert.equal(callCount, 1, "Should not retry on 401");
   } finally {
