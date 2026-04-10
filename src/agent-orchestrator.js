@@ -254,6 +254,7 @@ export async function runAgentWithFileTools({
   onToolResult,
   onCommandApproval,
   onFollowUpQuestion,
+  onDelta,
 }) {
   const workspaceMemory = await loadWorkspaceMemory(workspaceRoot);
   let nextConversationId = conversationId;
@@ -272,11 +273,23 @@ export async function runAgentWithFileTools({
 
   for (let step = 1; step <= maxSteps; step += 1) {
     onStatus?.(`step ${step}/${maxSteps}`);
+
+    // Stream deltas to the caller only for the final answer step.
+    // We capture deltas from every sendMessage call and forward them only
+    // when the directive turns out to be "final".
+    let pendingDeltas = "";
+    const captureOnDelta = onDelta
+      ? (delta) => {
+          pendingDeltas += delta;
+        }
+      : undefined;
+
     const assistantResponse = await client.sendMessage({
       content: turnPrompt,
       conversationId: nextConversationId,
       currentBranchPath: nextBranchPath,
       mode: nextMode,
+      onDelta: captureOnDelta,
     });
 
     nextConversationId = assistantResponse.conversationId;
@@ -286,6 +299,10 @@ export async function runAgentWithFileTools({
     const directive = extractAgentDirective(assistantResponse.content);
 
     if (directive.type === "final") {
+      // Forward captured deltas to caller only now that we know it's a final
+      if (onDelta && pendingDeltas) {
+        onDelta(pendingDeltas, { final: true });
+      }
       const finalCheck = await validateFinalResponse({
         task,
         content: directive.content,
@@ -324,6 +341,7 @@ export async function runAgentWithFileTools({
             currentBranchPath: nextBranchPath,
             mode: nextMode,
             steps: step,
+            touchedFiles: [...touchedFiles],
           };
         }
 
@@ -335,6 +353,7 @@ export async function runAgentWithFileTools({
             currentBranchPath: nextBranchPath,
             mode: nextMode,
             steps: step,
+            touchedFiles: [...touchedFiles],
           };
         }
 
@@ -361,6 +380,7 @@ export async function runAgentWithFileTools({
         currentBranchPath: nextBranchPath,
         mode: nextMode,
         steps: step,
+        touchedFiles: [...touchedFiles],
       };
     }
 
@@ -459,20 +479,25 @@ export async function runAgentWithFileTools({
   }
 
   onStatus?.("finalizing");
+  let forceFinalDeltas = "";
+  const forceFinalOnDelta = onDelta ? (delta) => { forceFinalDeltas += delta; } : undefined;
   const finalAttempt = await client.sendMessage({
     content: buildForceFinalizePrompt(),
     conversationId: nextConversationId,
     currentBranchPath: nextBranchPath,
     mode: nextMode,
+    onDelta: forceFinalOnDelta,
   });
   const finalDirective = extractAgentDirective(finalAttempt.content);
   if (finalDirective.type === "final") {
+    if (onDelta && forceFinalDeltas) onDelta(forceFinalDeltas, { final: true });
     return {
       content: finalDirective.content,
       conversationId: finalAttempt.conversationId,
       currentBranchPath: finalAttempt.currentBranchPath,
       mode: finalAttempt.mode,
       steps: maxSteps + 1,
+      touchedFiles: [...touchedFiles],
     };
   }
 
@@ -483,6 +508,7 @@ export async function runAgentWithFileTools({
     currentBranchPath: finalAttempt.currentBranchPath,
     mode: finalAttempt.mode,
     steps: maxSteps + 1,
+    touchedFiles: [...touchedFiles],
   };
 }
 

@@ -110,6 +110,12 @@ export const SLASH_COMMAND_DEFINITIONS = [
     description: "Show quick stats for the current session (messages, steps, touched files).",
   },
   {
+    name: "pin",
+    usage: "/pin [text]",
+    description:
+      "Pin persistent context that is prepended to every agent task this session. Run without args to view or clear pinned text.",
+  },
+  {
     name: "exit",
     usage: "/exit",
     description: "Exit the full-screen interface.",

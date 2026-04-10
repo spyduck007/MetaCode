@@ -159,3 +159,14 @@ test("completeSlashCommand uses first suggestion completion", () => {
   const result = completeSlashCommand("/hi", suggestions);
   assert.equal(result, "/history ");
 });
+
+test("SLASH_COMMAND_DEFINITIONS includes pin command", () => {
+  const names = SLASH_COMMAND_DEFINITIONS.map((c) => c.name);
+  assert.ok(names.includes("pin"), "pin command should be defined");
+});
+
+test("pin command has usage including [text]", () => {
+  const cmd = SLASH_COMMAND_DEFINITIONS.find((c) => c.name === "pin");
+  assert.ok(cmd, "pin command should exist");
+  assert.ok(cmd.usage.includes("text"), "pin usage should describe the text argument");
+});

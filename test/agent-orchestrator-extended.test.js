@@ -313,3 +313,120 @@ test("runAgentWithFileTools calls onStatus with step progress", async () => {
     await rm(workspace, { recursive: true, force: true });
   }
 });
+
+// ──────────────────────────────────────────────────────────────────────────────
+// runAgentWithFileTools — onDelta callback
+// ──────────────────────────────────────────────────────────────────────────────
+
+test("runAgentWithFileTools calls onDelta with final answer content", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "meta-agent-delta-"));
+  try {
+    const scriptedResponses = [
+      '{"type":"final","content":"The answer is 42."}',
+    ];
+
+    const deltas = [];
+    const fakeClient = {
+      async sendMessage({ onDelta }) {
+        const content = scriptedResponses.shift();
+        // Simulate streaming by calling onDelta with chunks
+        if (onDelta) {
+          onDelta('{"type":"final","content":"The answer is 42."}');
+        }
+        return {
+          content,
+          conversationId: "conv-delta",
+          currentBranchPath: "0",
+          mode: "think_fast",
+        };
+      },
+    };
+
+    await runAgentWithFileTools({
+      client: fakeClient,
+      task: "What is the answer?",
+      conversationId: "conv-delta",
+      currentBranchPath: "0",
+      mode: "think_fast",
+      workspaceRoot: workspace,
+      onDelta: (chunk) => deltas.push(chunk),
+    });
+
+    assert.ok(deltas.length > 0, "onDelta should have been called");
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// runAgentWithFileTools — touchedFiles in result
+// ──────────────────────────────────────────────────────────────────────────────
+
+test("runAgentWithFileTools includes touchedFiles array in result", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "meta-agent-tf-"));
+  try {
+    const scriptedResponses = [
+      '{"type":"tool_call","name":"write_file","arguments":{"path":"result.txt","content":"done"}}',
+      '{"type":"final","content":"File created."}',
+    ];
+
+    const fakeClient = {
+      async sendMessage({ onDelta }) {
+        return {
+          content: scriptedResponses.shift(),
+          conversationId: "conv-tf",
+          currentBranchPath: "0",
+          mode: "think_fast",
+        };
+      },
+    };
+
+    const result = await runAgentWithFileTools({
+      client: fakeClient,
+      task: "Create a file.",
+      conversationId: "conv-tf",
+      currentBranchPath: "0",
+      mode: "think_fast",
+      workspaceRoot: workspace,
+    });
+
+    assert.ok(Array.isArray(result.touchedFiles), "result.touchedFiles should be an array");
+    assert.ok(result.touchedFiles.length > 0, "result.touchedFiles should contain the written file");
+    assert.ok(
+      result.touchedFiles.some((f) => f.includes("result.txt")),
+      "result.touchedFiles should include result.txt"
+    );
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("runAgentWithFileTools result has touchedFiles even when no files touched", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "meta-agent-tf-empty-"));
+  try {
+    const fakeClient = {
+      async sendMessage() {
+        return {
+          content: '{"type":"final","content":"No files needed."}',
+          conversationId: "conv-tf-empty",
+          currentBranchPath: "0",
+          mode: "think_fast",
+        };
+      },
+    };
+
+    const result = await runAgentWithFileTools({
+      client: fakeClient,
+      task: "Simple question.",
+      conversationId: "conv-tf-empty",
+      currentBranchPath: "0",
+      mode: "think_fast",
+      workspaceRoot: workspace,
+    });
+
+    assert.ok(Array.isArray(result.touchedFiles), "result.touchedFiles should be an array");
+    assert.equal(result.touchedFiles.length, 0, "should be empty when no files touched");
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});

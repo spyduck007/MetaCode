@@ -762,6 +762,8 @@ export async function startTui({
     totalTouchedFiles: new Set(),
     agentStepsTotal: 0,
   };
+  // Pinned context: prepended to every agent task for this session
+  let pinnedContext = "";
 
   function renderStatusBar() {
     const spinner = busy ? SPINNER_FRAMES[spinnerIndex % SPINNER_FRAMES.length] : ">";
@@ -1286,6 +1288,40 @@ export async function startTui({
       return false;
     }
 
+    if (command.name === "pin") {
+      const text = command.args.join(" ").trim();
+      if (!text) {
+        if (!pinnedContext) {
+          pushMessage(
+            "system",
+            "No context pinned. Use `/pin <text>` to pin context that will be prepended to every agent task this session."
+          );
+        } else {
+          const lines = [
+            "Current pinned context:",
+            "",
+            ...pinnedContext.split("\n").map((l) => `  ${l}`),
+            "",
+            "Run `/pin clear` to remove it.",
+          ];
+          await showInfoModal(screen, "Pinned Context", lines);
+        }
+        return false;
+      }
+      if (text === "clear") {
+        if (!pinnedContext) {
+          pushMessage("system", "No pinned context to clear.");
+        } else {
+          pinnedContext = "";
+          pushMessage("system", "Pinned context cleared.");
+        }
+        return false;
+      }
+      pinnedContext = text;
+      pushMessage("system", `Pinned context set. It will be prepended to every agent task this session.`);
+      return false;
+    }
+
     pushMessage("error", `Unknown command "${command.raw}". Run /help for available commands.`);
     return false;
   }
@@ -1338,9 +1374,13 @@ export async function startTui({
     lastRunTouchedFiles = [];
     pushProgress(pickThinkingPhrase(lastProgressText), { force: true });
     setStatus("getting started");
+    // Prepend pinned context if set
+    const taskWithContext = pinnedContext
+      ? `[Pinned context: ${pinnedContext}]\n\n${content}`
+      : content;
     const result = await runAgentTask({
       client: currentClient,
-      task: content,
+      task: taskWithContext,
       session: currentSession,
       maxSteps: currentMaxSteps,
       onStatus: (message) => {

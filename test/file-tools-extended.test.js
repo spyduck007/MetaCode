@@ -341,3 +341,44 @@ test("executeFileToolCall returns error for missing tool name", async () => {
   assert.equal(result.ok, false);
   assert.match(result.error, /"name"/);
 });
+
+// ──────────────────────────────────────────────────────────────────────────────
+// FILE_TOOL_DEFINITIONS extended schema
+// ──────────────────────────────────────────────────────────────────────────────
+
+test("every FILE_TOOL_DEFINITION has a details field", async () => {
+  const { FILE_TOOL_DEFINITIONS } = await import("../src/file-tools.js");
+  for (const tool of FILE_TOOL_DEFINITIONS) {
+    assert.ok(
+      typeof tool.details === "string" && tool.details.length > 0,
+      `${tool.name} is missing details field`
+    );
+  }
+});
+
+test("every FILE_TOOL_DEFINITION has an example field", async () => {
+  const { FILE_TOOL_DEFINITIONS } = await import("../src/file-tools.js");
+  for (const tool of FILE_TOOL_DEFINITIONS) {
+    assert.ok(
+      typeof tool.example === "string" && tool.example.length > 0,
+      `${tool.name} is missing example field`
+    );
+  }
+});
+
+test("every FILE_TOOL_DEFINITION example is valid JSON with name and arguments", async () => {
+  const { FILE_TOOL_DEFINITIONS } = await import("../src/file-tools.js");
+  for (const tool of FILE_TOOL_DEFINITIONS) {
+    let parsed;
+    try {
+      parsed = JSON.parse(tool.example);
+    } catch (e) {
+      assert.fail(`${tool.name} example is not valid JSON: ${e.message}`);
+    }
+    assert.equal(parsed.name, tool.name, `${tool.name} example name mismatch`);
+    assert.ok(
+      parsed.arguments && typeof parsed.arguments === "object",
+      `${tool.name} example has no arguments object`
+    );
+  }
+});

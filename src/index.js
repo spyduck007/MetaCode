@@ -135,6 +135,7 @@ async function runAgentTask({
   onToolResult,
   onCommandApproval,
   onFollowUpQuestion,
+  onDelta,
 }) {
   if (!client) {
     throw new Error("No active auth session. Run /login first.");
@@ -153,6 +154,7 @@ async function runAgentTask({
     onToolResult,
     onCommandApproval,
     onFollowUpQuestion,
+    onDelta,
   });
 }
 
@@ -318,7 +320,8 @@ program
   .option("-s, --session <name>", "Session name")
   .option("-n, --new", "Start a new conversation in this session")
   .option("--yolo", "Auto-approve terminal command tool calls")
-  .option("--json", "Print one-shot output as JSON")
+  .option("--json", "Print one-shot output as JSON (includes steps, touchedFiles, durationMs)")
+  .option("--stream", "Stream output tokens to stdout as they arrive in one-shot mode")
   .action(async (promptParts, options) => {
     try {
       const prompt = Array.isArray(promptParts) ? promptParts.join(" ").trim() : "";
@@ -382,11 +385,14 @@ program
       }
 
       const runtime = await buildRuntime(options, { requireClient: true });
-      let output = "";
-      const showProgress = !options.json;
+      const showProgress = !options.json && !options.stream;
+      const streamMode = Boolean(options.stream) && !options.json;
       const yoloState = { enabled: Boolean(options.yolo) };
       let lastProgressMessage = "";
       let thinkingPhrase = pickThinkingPhrase();
+      const startMs = Date.now();
+      let streamedContent = "";
+
       const progress = (message) => {
         if (!showProgress || !message || message === lastProgressMessage) return;
         lastProgressMessage = message;
@@ -398,18 +404,42 @@ program
         task: prompt,
         session: runtime.session,
         maxSteps: runtime.maxSteps,
-        onStatus: (message) => progress(describeAgentStatusFriendly(message)),
+        onStatus: (message) => {
+          if (streamMode) {
+            process.stderr.write(chalk.dim(`\r• ${describeAgentStatusFriendly(message)}   `));
+          } else {
+            progress(describeAgentStatusFriendly(message));
+          }
+        },
         onThinking: (message) => {
           thinkingPhrase = message?.trim() || pickThinkingPhrase(thinkingPhrase);
-          progress(thinkingPhrase);
+          if (streamMode) {
+            process.stderr.write(chalk.dim(`\r• ${thinkingPhrase}   `));
+          } else {
+            progress(thinkingPhrase);
+          }
         },
-        onToolCall: (call) => progress(describeToolCallFriendly(call)),
+        onToolCall: (call) => {
+          const desc = describeToolCallFriendly(call);
+          if (streamMode) {
+            process.stderr.write(chalk.dim(`\r• ${desc}   `));
+          } else {
+            progress(desc);
+          }
+        },
         onToolResult: (toolResult) => {
           if (!toolResult.ok) {
             progress(`ran into an issue: ${toolResult.error}`);
           }
         },
+        onDelta: streamMode
+          ? (delta) => {
+              streamedContent += delta;
+              process.stdout.write(delta);
+            }
+          : undefined,
         onCommandApproval: async ({ command, cwd, timeoutMs }) => {
+          if (streamMode) process.stderr.write("\n");
           return promptCommandApproval({
             command,
             cwd,
@@ -419,6 +449,7 @@ program
           });
         },
         onFollowUpQuestion: async ({ question, choices, allowFreeform }) => {
+          if (streamMode) process.stderr.write("\n");
           return promptAgentFollowUp({
             question,
             choices,
@@ -427,8 +458,17 @@ program
           });
         },
       });
-      output = result.content;
-      if (!options.json) process.stdout.write(`${output}\n`);
+
+      const durationMs = Date.now() - startMs;
+      const output = result.content;
+
+      if (streamMode) {
+        // Delta was already streamed to stdout; ensure trailing newline
+        if (!streamedContent.endsWith("\n")) process.stdout.write("\n");
+        process.stderr.write("\n");
+      } else if (!options.json) {
+        process.stdout.write(`${output}\n`);
+      }
 
       await updateSession(runtime.sessionName, {
         ...runtime.session,
@@ -441,12 +481,15 @@ program
         process.stdout.write(
           `${JSON.stringify(
             {
-              content: output || result.content,
+              content: output,
               session: runtime.sessionName,
               conversationId: result.conversationId,
               branchPath: result.currentBranchPath,
               mode: result.mode,
               maxSteps: runtime.maxSteps,
+              steps: result.steps ?? null,
+              touchedFiles: result.touchedFiles ?? [],
+              durationMs,
             },
             null,
             2
@@ -658,6 +701,31 @@ toolsCommand
       console.log(`${tool.name}(${tool.args.join(", ")})`);
       console.log(`  ${tool.description}`);
     });
+  });
+
+toolsCommand
+  .command("describe")
+  .description("Show detailed help for a specific file tool")
+  .argument("<name>", "Tool name (e.g. edit_file, glob_files)")
+  .action((name) => {
+    const tool = FILE_TOOL_DEFINITIONS.find((t) => t.name === name);
+    if (!tool) {
+      const allNames = FILE_TOOL_DEFINITIONS.map((t) => t.name).join(", ");
+      console.error(chalk.red(`Unknown tool "${name}". Available tools: ${allNames}`));
+      process.exitCode = 1;
+      return;
+    }
+    console.log(chalk.bold(`${tool.name}(${tool.args.join(", ")})`));
+    console.log(`${tool.description}`);
+    if (tool.details) {
+      console.log("");
+      console.log(tool.details);
+    }
+    if (tool.example) {
+      console.log("");
+      console.log(chalk.dim("Example:"));
+      console.log(`  ${tool.example}`);
+    }
   });
 
 const memoryCommand = program
