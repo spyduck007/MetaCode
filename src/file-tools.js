@@ -404,6 +404,154 @@ function truncateOutput(value) {
   return `${value.slice(0, MAX_COMMAND_OUTPUT_CHARS)}\n...[truncated]`;
 }
 
+function globPatternToRegex(pattern) {
+  // Convert a glob pattern to a RegExp. Supports *, **, ?, and {a,b} alternation.
+  let regexStr = "";
+  let i = 0;
+  while (i < pattern.length) {
+    const ch = pattern[i];
+    if (ch === "*") {
+      if (pattern[i + 1] === "*") {
+        regexStr += ".*";
+        i += 2;
+        if (pattern[i] === "/") i += 1;
+      } else {
+        regexStr += "[^/]*";
+        i += 1;
+      }
+    } else if (ch === "?") {
+      regexStr += "[^/]";
+      i += 1;
+    } else if (ch === "{") {
+      const end = pattern.indexOf("}", i);
+      if (end === -1) {
+        regexStr += "\\{";
+        i += 1;
+      } else {
+        const alts = pattern
+          .slice(i + 1, end)
+          .split(",")
+          .map((alt) => alt.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+        regexStr += `(?:${alts.join("|")})`;
+        i = end + 1;
+      }
+    } else if (/[.*+?^${}()|[\]\\]/.test(ch)) {
+      regexStr += `\\${ch}`;
+      i += 1;
+    } else {
+      regexStr += ch;
+      i += 1;
+    }
+  }
+  return new RegExp(`^${regexStr}$`);
+}
+
+const MAX_GLOB_MATCHES = 500;
+
+async function toolGlobFiles(args, workspaceRoot) {
+  const pattern = args?.pattern;
+  if (!pattern || typeof pattern !== "string") {
+    throw new Error(`"pattern" is required and must be a string (e.g. "**/*.js").`);
+  }
+
+  const relativePath = args?.path ?? ".";
+  const absolutePath = resolveWorkspacePath(workspaceRoot, relativePath);
+  const stat = await fs.stat(absolutePath);
+  if (!stat.isDirectory()) {
+    throw new Error(`Path "${relativePath}" must be a directory for glob_files.`);
+  }
+
+  const regex = globPatternToRegex(pattern);
+  const matches = [];
+
+  async function walkDir(dir, baseRelative) {
+    if (matches.length >= MAX_GLOB_MATCHES) return;
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (matches.length >= MAX_GLOB_MATCHES) break;
+      if (SKIP_DIRS.has(entry.name)) continue;
+      const childRelative = baseRelative ? `${baseRelative}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        await walkDir(path.join(dir, entry.name), childRelative);
+      } else {
+        if (regex.test(childRelative)) {
+          matches.push(childRelative);
+        }
+      }
+    }
+  }
+
+  await walkDir(absolutePath, "");
+
+  return {
+    pattern,
+    path: toRelativeDisplayPath(workspaceRoot, absolutePath),
+    count: matches.length,
+    truncated: matches.length >= MAX_GLOB_MATCHES,
+    matches,
+  };
+}
+
+async function toolPatchFile(args, workspaceRoot) {
+  const relativePath = args?.path;
+  if (!relativePath) throw new Error(`"path" is required.`);
+  if (typeof args?.hunks !== "string" || !args.hunks.trim()) {
+    throw new Error(`"hunks" is required and must be a unified-diff string.`);
+  }
+
+  const absolutePath = resolveWorkspacePath(workspaceRoot, relativePath);
+  const originalContent = await fs.readFile(absolutePath, "utf8");
+  const originalLines = originalContent.split(/\r?\n/);
+
+  const patchedLines = applyUnifiedDiff(originalLines, args.hunks);
+
+  await fs.writeFile(absolutePath, patchedLines.join("\n"), "utf8");
+  return {
+    path: toRelativeDisplayPath(workspaceRoot, absolutePath),
+    linesOriginal: originalLines.length,
+    linesPatched: patchedLines.length,
+  };
+}
+
+function applyUnifiedDiff(originalLines, hunksText) {
+  // Parse and apply unified diff hunks (lines starting with @@).
+  const hunkRegex = /^@@\s*-(\d+)(?:,(\d+))?\s*\+(\d+)(?:,(\d+))?\s*@@/;
+  const diffLines = hunksText.split(/\r?\n/);
+  const result = [...originalLines];
+  let offset = 0;
+
+  let i = 0;
+  while (i < diffLines.length) {
+    const headerMatch = diffLines[i].match(hunkRegex);
+    if (!headerMatch) {
+      i += 1;
+      continue;
+    }
+
+    const origStart = Number.parseInt(headerMatch[1], 10) - 1;
+    const hunkLines = [];
+    i += 1;
+
+    while (i < diffLines.length && !diffLines[i].match(hunkRegex)) {
+      hunkLines.push(diffLines[i]);
+      i += 1;
+    }
+
+    const removals = hunkLines.filter((l) => l.startsWith("-")).map((l) => l.slice(1));
+    const additions = hunkLines.filter((l) => l.startsWith("+")).map((l) => l.slice(1));
+    const contextCount = hunkLines.filter((l) => l.startsWith(" ")).length;
+    const removeCount = removals.length;
+
+    const spliceAt = origStart + offset;
+    result.splice(spliceAt, removeCount + contextCount, ...hunkLines
+      .filter((l) => !l.startsWith("-"))
+      .map((l) => l.slice(1)));
+    offset += additions.length - removeCount;
+  }
+
+  return result;
+}
+
 const TOOL_HANDLERS = {
   list_dir: toolListDir,
   read_file: toolReadFile,
@@ -414,6 +562,8 @@ const TOOL_HANDLERS = {
   mkdir: toolMkdir,
   move_path: toolMovePath,
   search_files: toolSearchFiles,
+  glob_files: toolGlobFiles,
+  patch_file: toolPatchFile,
   stat_path: toolStatPath,
   run_command: toolRunCommand,
 };
@@ -428,6 +578,8 @@ export const FILE_TOOL_DEFINITIONS = [
   { name: "mkdir", description: "Create a directory.", args: ["path", "recursive?"] },
   { name: "move_path", description: "Rename/move a file or directory.", args: ["from", "to"] },
   { name: "search_files", description: "Search text across files in a directory.", args: ["query", "path?", "caseSensitive?", "regex?"] },
+  { name: "glob_files", description: "Find files matching a glob pattern (e.g. **/*.ts, src/*.js).", args: ["pattern", "path?"] },
+  { name: "patch_file", description: "Apply a unified-diff patch string to a file.", args: ["path", "hunks"] },
   { name: "stat_path", description: "Get basic metadata for a file or directory.", args: ["path"] },
   { name: "run_command", description: "Run a shell command in workspace (requires user approval unless yolo).", args: ["command", "cwd?", "timeoutMs?"] },
 ];

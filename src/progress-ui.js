@@ -58,6 +58,12 @@ export function describeToolCallFriendly(call) {
     case "search_files":
       if (query) return `searching for "${query}"`;
       return "searching across files";
+    case "glob_files": {
+      const pattern = getArgPreview(args, "pattern");
+      return pattern ? `finding files matching ${pattern}` : "finding files by pattern";
+    }
+    case "patch_file":
+      return path ? `patching ${path}` : "patching a file";
     case "stat_path":
       return path ? `checking details for ${path}` : "checking file details";
     case "run_command":

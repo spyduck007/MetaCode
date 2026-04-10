@@ -19,6 +19,7 @@ import {
   normalizeAgentSteps,
 } from "./max-steps.js";
 import { runDoctor } from "./doctor.js";
+import { exportConversationToFile } from "./export-conversation.js";
 
 const MAX_MESSAGES = 250;
 const STATUS_HEIGHT = 1;
@@ -743,11 +744,18 @@ export async function startTui({
   let lastProgressText = "";
   let lastProgressTs = 0;
   let yoloMode = false;
+  let agentMode = true;
   let currentMaxSteps = normalizeAgentSteps(defaultMaxSteps);
   let lastUserPrompt = "";
   let liveProgressMessage = null;
   let liveProgressBaseText = "";
   const chattedSessions = new Set();
+  // Input history: store submitted prompts, navigate with ↑/↓ when no suggestions visible
+  const inputHistory = [];
+  let inputHistoryIndex = -1;
+  let inputHistorySavedDraft = "";
+  // Track files touched by the last agent run for /diff
+  let lastRunTouchedFiles = [];
 
   function renderStatusBar() {
     const spinner = busy ? SPINNER_FRAMES[spinnerIndex % SPINNER_FRAMES.length] : ">";
@@ -755,7 +763,7 @@ export async function startTui({
     statusBar.setContent(
       ` ${spinner} session=${escapeTags(currentSessionName)} | mode=${escapeTags(
         currentSession.mode
-      )} | steps=${currentMaxSteps} | yolo=${yoloMode ? "on" : "off"} | auth=${escapeTags(
+      )} | steps=${currentMaxSteps} | agent=${agentMode ? "on" : "off"} | yolo=${yoloMode ? "on" : "off"} | auth=${escapeTags(
         currentAuth.source
       )} | ${escapeTags(activity)} `
     );
@@ -1134,6 +1142,113 @@ export async function startTui({
       return false;
     }
 
+    if (command.name === "history") {
+      const historyMessages = messages.filter(
+        (m) => m.role === "user" || m.role === "assistant" || m.role === "error"
+      );
+      if (historyMessages.length === 0) {
+        pushMessage("system", "No conversation history yet.");
+        return false;
+      }
+      const historyLines = historyMessages.flatMap((m) => {
+        const prefix = m.role === "user" ? "YOU:" : m.role === "assistant" ? "ASSISTANT:" : "ERROR:";
+        const body = m.text.split("\n");
+        return [`${prefix}`, ...body, ""];
+      });
+      await showInfoModal(screen, "Conversation History", historyLines);
+      return false;
+    }
+
+    if (command.name === "export") {
+      const filename = command.args[0] || "";
+      try {
+        const exportResult = await exportConversationToFile(messages, {
+          filename,
+          outputDir: process.cwd(),
+          sessionName: currentSessionName,
+          mode: currentSession.mode,
+        });
+        pushMessage(
+          "system",
+          `Conversation exported to: ${exportResult.filePath} (${exportResult.messageCount} messages, ${exportResult.bytes} bytes)`
+        );
+      } catch (error) {
+        pushMessage("error", `Export failed: ${error.message}`);
+      }
+      return false;
+    }
+
+    if (command.name === "compact") {
+      const conversationMessages = messages.filter(
+        (m) => m.role === "user" || m.role === "assistant"
+      );
+      if (conversationMessages.length < 2) {
+        pushMessage("system", "Not enough conversation to compact.");
+        return false;
+      }
+      // Build a compact summary by keeping the first user message and last few exchanges
+      const keepLast = 4;
+      const kept = conversationMessages.slice(-keepLast);
+      const droppedCount = conversationMessages.length - kept.length;
+      // Remove all conversation messages from display, inject a summary marker
+      const nonConversation = messages.filter(
+        (m) => m.role !== "user" && m.role !== "assistant"
+      );
+      messages.length = 0;
+      messages.push(...nonConversation);
+      messages.push({
+        role: "system",
+        text: `[Compacted: ${droppedCount} earlier message(s) removed from view. Last ${kept.length} message(s) retained.]`,
+      });
+      messages.push(...kept);
+      trimMessageHistory(messages);
+      renderMessages({ forceBottom: true });
+      pushMessage("system", `Conversation compacted. ${droppedCount} older message(s) cleared from view.`);
+      return false;
+    }
+
+    if (command.name === "agent") {
+      const value = (command.args[0] || "toggle").toLowerCase();
+      if (value === "status") {
+        pushMessage("system", `agent mode is ${agentMode ? "ON (file tools enabled)" : "OFF (plain chat)"}.`);
+        return false;
+      }
+      if (value === "on") {
+        agentMode = true;
+        pushMessage("system", "agent mode enabled: prompts use file tools.");
+        renderStatusBar();
+        return false;
+      }
+      if (value === "off") {
+        agentMode = false;
+        pushMessage("system", "agent mode disabled: prompts are plain chat (no file tools).");
+        renderStatusBar();
+        return false;
+      }
+      if (value === "toggle") {
+        agentMode = !agentMode;
+        pushMessage("system", `agent mode is now ${agentMode ? "ON" : "OFF"}.`);
+        renderStatusBar();
+        return false;
+      }
+      pushMessage("error", "Usage: /agent [on|off|status]");
+      return false;
+    }
+
+    if (command.name === "diff") {
+      if (lastRunTouchedFiles.length === 0) {
+        pushMessage("system", "No files were touched in the last agent run (or no agent run yet).");
+        return false;
+      }
+      const lines = [
+        `Files touched in last agent run (${lastRunTouchedFiles.length}):`,
+        "",
+        ...lastRunTouchedFiles.map((f) => `  • ${f}`),
+      ];
+      await showInfoModal(screen, "Last Run — Touched Files", lines);
+      return false;
+    }
+
     pushMessage("error", `Unknown command "${command.raw}". Run /help for available commands.`);
     return false;
   }
@@ -1148,6 +1263,41 @@ export async function startTui({
     }
 
     pushMessage("user", content, { forceBottom: true });
+
+    // Plain chat mode: skip the agent pipeline and send directly as a single message
+    if (!agentMode) {
+      pushProgress(pickThinkingPhrase(lastProgressText), { force: true });
+      setStatus("thinking");
+      const result = await runAgentTask({
+        client: currentClient,
+        task: content,
+        session: currentSession,
+        maxSteps: 1,
+        onStatus: (message) => setStatus(describeAgentStatusFriendly(message)),
+        onThinking: (message) => {
+          pushProgress(message?.trim() || pickThinkingPhrase(lastProgressText));
+        },
+        onToolCall: null,
+        onToolResult: null,
+        onCommandApproval: null,
+        onFollowUpQuestion: null,
+      });
+      setStatus("done");
+      pushMessage("assistant", result.content, { forceBottom: true });
+      currentSession = {
+        ...currentSession,
+        conversationId: result.conversationId,
+        currentBranchPath: result.currentBranchPath,
+        mode: normalizeMode(result.mode),
+      };
+      await saveSession(currentSessionName, currentSession);
+      chattedSessions.add(currentSessionName);
+      renderMessages({ forceBottom: true });
+      return;
+    }
+
+    // Agent mode: full tool-enabled pipeline
+    lastRunTouchedFiles = [];
     pushProgress(pickThinkingPhrase(lastProgressText), { force: true });
     setStatus("getting started");
     const result = await runAgentTask({
@@ -1197,6 +1347,12 @@ export async function startTui({
             { forceBottom: true }
           );
           pushProgress("recovering from an issue and trying again");
+        } else if (toolResult.result?.path) {
+          // Track files touched by the agent for /diff
+          const p = toolResult.result.path;
+          if (typeof p === "string" && p !== "." && !lastRunTouchedFiles.includes(p)) {
+            lastRunTouchedFiles.push(p);
+          }
         }
       },
       onCommandApproval: async ({ command, cwd }) => {
@@ -1266,6 +1422,14 @@ export async function startTui({
       return false;
     }
 
+    // Add to input history (avoid consecutive duplicates)
+    if (input && (inputHistory.length === 0 || inputHistory[inputHistory.length - 1] !== input)) {
+      inputHistory.push(input);
+      if (inputHistory.length > 200) inputHistory.shift();
+    }
+    inputHistoryIndex = -1;
+    inputHistorySavedDraft = "";
+
     busy = true;
     startBusyAnimation();
     setStatus("starting");
@@ -1333,20 +1497,55 @@ export async function startTui({
     });
 
     inputBox.key(["up", "down"], (_ch, key) => {
-      if (!suggestionList.visible || !currentSuggestions.length) return;
-      if (key.name === "up") {
-        suggestionSelectedIndex =
-          (suggestionSelectedIndex - 1 + currentSuggestions.length) % currentSuggestions.length;
-      } else if (key.name === "down") {
-        suggestionSelectedIndex = (suggestionSelectedIndex + 1) % currentSuggestions.length;
+      // If the autocomplete suggestion list is visible, navigate suggestions
+      if (suggestionList.visible && currentSuggestions.length) {
+        if (key.name === "up") {
+          suggestionSelectedIndex =
+            (suggestionSelectedIndex - 1 + currentSuggestions.length) % currentSuggestions.length;
+        } else if (key.name === "down") {
+          suggestionSelectedIndex = (suggestionSelectedIndex + 1) % currentSuggestions.length;
+        }
+        suggestionList.select(suggestionSelectedIndex);
+        screen.render();
+        return false;
       }
-      suggestionList.select(suggestionSelectedIndex);
-      screen.render();
+
+      // Otherwise navigate through input history
+      if (inputHistory.length === 0) return false;
+      if (key.name === "up") {
+        if (inputHistoryIndex === -1) {
+          // Save the current draft before we start navigating
+          inputHistorySavedDraft = inputBox.getValue();
+          inputHistoryIndex = inputHistory.length - 1;
+        } else if (inputHistoryIndex > 0) {
+          inputHistoryIndex -= 1;
+        }
+        inputBox.setValue(inputHistory[inputHistoryIndex]);
+        screen.render();
+        return false;
+      }
+      if (key.name === "down") {
+        if (inputHistoryIndex === -1) return false;
+        if (inputHistoryIndex < inputHistory.length - 1) {
+          inputHistoryIndex += 1;
+          inputBox.setValue(inputHistory[inputHistoryIndex]);
+        } else {
+          inputHistoryIndex = -1;
+          inputBox.setValue(inputHistorySavedDraft);
+        }
+        screen.render();
+        return false;
+      }
       return false;
     });
 
     inputBox.on("keypress", (_ch, key) => {
       if (key?.name === "up" || key?.name === "down") return;
+      // Any other keypress resets history navigation
+      if (inputHistoryIndex !== -1) {
+        inputHistoryIndex = -1;
+        inputHistorySavedDraft = "";
+      }
       suggestionSelectedIndex = 0;
       setImmediate(() => updateAutocompleteList());
     });

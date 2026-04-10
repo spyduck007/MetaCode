@@ -80,6 +80,31 @@ export const SLASH_COMMAND_DEFINITIONS = [
     description: "Clear messages from the current terminal view.",
   },
   {
+    name: "history",
+    usage: "/history",
+    description: "Show full scrollable conversation history in a modal.",
+  },
+  {
+    name: "export",
+    usage: "/export [filename]",
+    description: "Export conversation to a markdown file (defaults to metacode-export-<timestamp>.md).",
+  },
+  {
+    name: "compact",
+    usage: "/compact",
+    description: "Summarize and compact the current conversation context to save space.",
+  },
+  {
+    name: "agent",
+    usage: "/agent [on|off|status]",
+    description: "Toggle agent mode (file tools). Off = plain chat. Default: on.",
+  },
+  {
+    name: "diff",
+    usage: "/diff",
+    description: "Show files touched by the last agent run.",
+  },
+  {
     name: "exit",
     usage: "/exit",
     description: "Exit the full-screen interface.",
